@@ -1,0 +1,32 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+
+# Build and Packaging artifacts
+build/
+dist/
+installer_output/
+*.spec.bak
+*.exe
+*.zip
+*.gz
+
+# Local databases and backups
+data/*.db
+data/*.db-journal
+data/*.db-wal
+data/backups/
+backups/
+data/logs/
+*.log
+
+# Environment and IDE files
+.env
+.venv
+env/
+venv/
+ENV/
+.pytest_cache/
+scratch/
