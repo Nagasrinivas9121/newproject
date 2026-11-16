@@ -1,0 +1,52 @@
+================================================================================
+SRIVANI BOOKING MANAGER v5.0.0 — LICENSE ACTIVATION & RECOVERY INSTRUCTIONS
+================================================================================
+
+1. OFFLINE ACTIVATION STEPS
+All license verification in SRIVANI BOOKING MANAGER is 100% offline.
+No internet connection is required to validate or activate your software.
+
+To activate your commercial license:
+1. Launch SRIVANI BOOKING MANAGER on your Windows computer.
+2. If this is a fresh installation, the First-Run Setup Wizard opens automatically.
+   If already installed, click "Preferences & About" (gear icon) -> "Client Licensing".
+3. Locate your unique 16-character Machine Installation ID:
+   Example: SRVN-XXXX-XXXX-XXXX
+   Click "Copy ID" to copy it to your clipboard.
+4. Provide your Installation ID and Organization Name to Devotee Technologies
+   or your authorized software distributor.
+5. In return, you will receive your signed 24-character Commercial License Key:
+   Example: SRVN-P3CB-4A52-4F38-6D34
+6. Enter your Client Name and the License Key into the activation dialog.
+7. Click "Activate License".
+8. A green badge will confirm: "License State: ACTIVE (COMMERCIAL)".
+
+--------------------------------------------------------------------------------
+2. 30-DAY FREE EVALUATION MODE
+--------------------------------------------------------------------------------
+If you do not yet have a commercial license key:
+1. Open the First-Run Setup Wizard or go to Preferences -> Client Licensing.
+2. Select "Start 30-Day Evaluation License".
+3. All features, queues, Excel/CSV tools, and reports are immediately unlocked
+   for 30 days without restriction.
+
+--------------------------------------------------------------------------------
+3. LICENSE RECOVERY PROCEDURE
+--------------------------------------------------------------------------------
+If you reinstall Windows, format your drive, or migrate computers:
+1. Re-install SRIVANI BOOKING MANAGER on your computer.
+2. If reinstalling on the SAME computer, your Machine Installation ID remains
+   identical. Simply re-enter your original Commercial License Key to restore
+   full commercial activation immediately.
+3. If migrating to a NEW computer, your Machine Installation ID will change.
+   Send your new Installation ID along with proof of purchase to support for
+   a free license re-issuance.
+
+--------------------------------------------------------------------------------
+4. GRACE PERIOD / SAFE MODE
+--------------------------------------------------------------------------------
+If your evaluation license reaches its expiration date:
+- The software DOES NOT delete records, block access, or lock your databases.
+- You can continue viewing all families, pilgrims, audit logs, and running backups.
+- You can activate a commercial license key at any time to resume full access.
+================================================================================

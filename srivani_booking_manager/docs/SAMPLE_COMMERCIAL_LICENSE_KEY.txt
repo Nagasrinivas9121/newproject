@@ -1,0 +1,27 @@
+================================================================================
+SRIVANI BOOKING MANAGER v5.0.0 — PRE-GENERATED SAMPLE COMMERCIAL LICENSE
+================================================================================
+
+This pre-generated perpetual commercial license key is provided for immediate
+client evaluation, demonstration, and offline workstation testing.
+
+--------------------------------------------------------------------------------
+LICENSE PARAMETERS:
+--------------------------------------------------------------------------------
+Registered Client Name : TIRUMALA PILGRIM SERVICES
+Installation ID        : ANY (Multi-Seat Site License)
+License Tier           : COMMERCIAL
+Validity / Expiry      : PERPETUAL (Lifetime)
+--------------------------------------------------------------------------------
+COMMERCIAL LICENSE KEY : SRVN-P3CB-4A52-4F38-6D34
+--------------------------------------------------------------------------------
+
+ACTIVATION STEPS:
+1. Launch SRIVANI BOOKING MANAGER.
+2. In the First-Run Setup Wizard (or Preferences -> Client Licensing):
+   - Select "Enter Commercial License Key".
+   - Client Name: TIRUMALA PILGRIM SERVICES
+   - License Key: SRVN-P3CB-4A52-4F38-6D34
+3. Click "Activate License".
+4. The software will confirm perpetual commercial activation immediately.
+================================================================================

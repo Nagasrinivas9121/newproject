@@ -1,0 +1,27 @@
+{
+  "manifest_version": 3,
+  "name": "SRIVANI TTD Auto-Fill Companion",
+  "version": "1.0.0",
+  "description": "Official companion extension for SRIVANI Booking Manager. Automatically connects to localhost:8000 and fills devotee details on TTD darshan pages.",
+  "permissions": [
+    "activeTab",
+    "scripting"
+  ],
+  "host_permissions": [
+    "https://tirupatibalaji.ap.gov.in/*",
+    "https://ttdevasthanams.ap.gov.in/*",
+    "http://localhost:8000/*",
+    "http://127.0.0.1:8000/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "https://tirupatibalaji.ap.gov.in/*",
+        "https://ttdevasthanams.ap.gov.in/*",
+        "http://localhost:8000/demo-ttd-booking*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_end"
+    }
+  ]
+}

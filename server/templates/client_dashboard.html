@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SRIVANI Client Portal - Organization Workspace</title>
+    <style>
+        :root {
+            --bg: #f8fafc;
+            --surface: #ffffff;
+            --border: #e2e8f0;
+            --primary: #b45309;
+            --primary-dark: #78350f;
+            --text: #0f172a;
+            --text-muted: #64748b;
+            --success: #16a34a;
+            --warning: #d97706;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+        body { background-color: var(--bg); color: var(--text); min-height: 100vh; padding: 2rem; }
+        .header { display: flex; justify-content: space-between; align-items: center; padding-bottom: 1.5rem; border-bottom: 1px solid var(--border); }
+        .brand { display: flex; align-items: center; gap: 0.75rem; }
+        .brand-badge { background: var(--primary); color: #fff; font-weight: bold; padding: 0.25rem 0.6rem; border-radius: 4px; font-size: 0.8rem; }
+        h1 { font-size: 1.5rem; font-weight: 600; }
+        .subtitle { color: var(--text-muted); font-size: 0.9rem; margin-top: 0.25rem; }
+        .grid-kpi { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin-top: 2rem; }
+        .card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 1.25rem; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
+        .card-label { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); }
+        .card-value { font-size: 1.8rem; font-weight: 700; color: var(--text); margin-top: 0.5rem; }
+        .card-subtext { font-size: 0.8rem; color: var(--text-muted); margin-top: 0.25rem; }
+        .section-title { font-size: 1.2rem; font-weight: 600; margin-top: 2.5rem; margin-bottom: 1rem; }
+        .table-wrap { overflow-x: auto; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; }
+        table { width: 100%; border-collapse: collapse; text-align: left; font-size: 0.9rem; }
+        th { background: #f1f5f9; padding: 0.75rem 1rem; color: var(--text-muted); font-weight: 600; border-bottom: 1px solid var(--border); }
+        td { padding: 0.85rem 1rem; border-bottom: 1px solid var(--border); }
+        tr:last-child td { border-bottom: none; }
+        .badge { display: inline-block; padding: 0.2rem 0.5rem; border-radius: 4px; font-size: 0.75rem; font-weight: 600; }
+        .badge-booked { background: #dcfce7; color: var(--success); }
+        .badge-pending { background: #fef3c7; color: var(--warning); }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div class="brand">
+            <span class="brand-badge">CLIENT WORKSPACE</span>
+            <div>
+                <h1 id="tenant-name">Client Organization Workspace</h1>
+                <div class="subtitle" id="tenant-sub">SRIVANI Assisted Booking Management</div>
+            </div>
+        </div>
+        <div>
+            <span class="badge" id="plan-badge" style="background:#e0e7ff; color:#3730a3;">ACTIVE PLAN</span>
+        </div>
+    </div>
+
+    <div class="grid-kpi">
+        <div class="card">
+            <div class="card-label">Total Families</div>
+            <div class="card-value" id="kpi-fams">--</div>
+            <div class="card-subtext">Registered families</div>
+        </div>
+        <div class="card">
+            <div class="card-label">Total Devotees</div>
+            <div class="card-value" id="kpi-pils">--</div>
+            <div class="card-subtext">Pilgrim profiles</div>
+        </div>
+        <div class="card">
+            <div class="card-label">Booked Darshans</div>
+            <div class="card-value" style="color: var(--success);" id="kpi-booked">--</div>
+            <div class="card-subtext">Completed successfully</div>
+        </div>
+        <div class="card">
+            <div class="card-label">Pending Queue</div>
+            <div class="card-value" style="color: var(--warning);" id="kpi-pending">--</div>
+            <div class="card-subtext">Awaiting booking slot</div>
+        </div>
+        <div class="card">
+            <div class="card-label">Completion Rate</div>
+            <div class="card-value" id="kpi-rate">--%</div>
+            <div class="card-subtext">Throughput velocity</div>
+        </div>
+    </div>
+
+    <div class="section-title">Recent Family Requests</div>
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr>
+                    <th>Family ID</th>
+                    <th>Head Devotee</th>
+                    <th>Contact</th>
+                    <th>Preferred Date</th>
+                    <th>Status</th>
+                </tr>
+            </thead>
+            <tbody id="family-rows">
+                <tr><td colspan="5" style="text-align: center; color: var(--text-muted); padding: 2rem;">Loading client workspace data...</td></tr>
+            </tbody>
+        </table>
+    </div>
+
+    <script>
+        async function loadClientDashboard() {
+            try {
+                const res = await fetch('/api/v1/client/dashboard', {
+                    headers: { 'Authorization': 'Bearer ' + localStorage.getItem('token') }
+                });
+                if (!res.ok) return;
+                const data = await res.json();
+                document.getElementById('tenant-name').textContent = data.tenant_name;
+                document.getElementById('kpi-fams').textContent = data.total_families;
+                document.getElementById('kpi-pils').textContent = data.total_pilgrims;
+                document.getElementById('kpi-booked').textContent = data.completed_bookings;
+                document.getElementById('kpi-pending').textContent = data.pending_bookings;
+                document.getElementById('kpi-rate').textContent = data.completion_rate_pct + '%';
+                document.getElementById('plan-badge').textContent = `${data.plan_name} (${data.days_remaining}d left)`;
+
+                const tbody = document.getElementById('family-rows');
+                tbody.innerHTML = '';
+                if (!data.recent_families || data.recent_families.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: var(--text-muted); padding: 2rem;">No families registered yet.</td></tr>';
+                    return;
+                }
+                data.recent_families.forEach(f => {
+                    const tr = document.createElement('tr');
+                    const badgeClass = f.status === 'Booked' ? 'badge-booked' : 'badge-pending';
+                    tr.innerHTML = `
+                        <td><strong>${f.family_id_str}</strong></td>
+                        <td>${f.head_name}</td>
+                        <td>${f.contact_number}</td>
+                        <td>${f.preferred_date || 'N/A'}</td>
+                        <td><span class="badge ${badgeClass}">${f.status}</span></td>
+                    `;
+                    tbody.appendChild(tr);
+                });
+            } catch (err) {
+                console.log(err);
+            }
+        }
+        window.addEventListener('DOMContentLoaded', loadClientDashboard);
+    </script>
+</body>
+</html>

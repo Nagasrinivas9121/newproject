@@ -1,0 +1,7 @@
+family_code,family_name,contact_name,phone,email,donation_amount,booking_type,preferred_date,priority,notes,full_name,age,gender,id_proof_type,id_proof_last4
+FAM-001,Reddy Family,Ramesh Reddy,9848022338,ramesh.reddy@example.com,20000,Advance,2026-12-25,High,Prefers morning break darshan,Ramesh Reddy,46,Male,Aadhaar,1234
+FAM-001,Reddy Family,Ramesh Reddy,9848022338,ramesh.reddy@example.com,20000,Advance,2026-12-25,High,Prefers morning break darshan,Sita Devi Reddy,42,Female,Aadhaar,5678
+FAM-002,Sharma Family,Venkatesh Sharma,9440112233,v.sharma@example.com,10000,Current,2026-11-20,Urgent,Urgent offline counter quota,Venkatesh Sharma,52,Male,Passport,9012
+FAM-003,Verma Family,Rajesh Verma,9876543210,r.verma@example.com,30000,Advance,2026-12-30,Normal,,Rajesh Verma,48,Male,Aadhaar,4321
+FAM-003,Verma Family,Rajesh Verma,9876543210,r.verma@example.com,30000,Advance,2026-12-30,Normal,,Sunita Verma,45,Female,Aadhaar,8765
+FAM-003,Verma Family,Rajesh Verma,9876543210,r.verma@example.com,30000,Advance,2026-12-30,Normal,,Aarav Verma,18,Male,Aadhaar,6543

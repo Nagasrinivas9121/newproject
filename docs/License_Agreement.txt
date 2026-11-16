@@ -1,0 +1,41 @@
+================================================================================
+SRIVANI BOOKING MANAGER — COMMERCIAL SOFTWARE LICENSE AGREEMENT (EULA)
+Version: 5.0.0 (Production Release)
+================================================================================
+
+1. GRANT OF LICENSE
+Devotee Technologies grants you a single-workstation, non-exclusive, non-transferable
+license to install, run, and execute SRIVANI BOOKING MANAGER on an authorized
+computer running Microsoft Windows.
+
+2. ASSISTED OPERATOR TOOL & TTD COMPLIANCE
+The Software is strictly an administrative assistant for organizing pilgrim rosters,
+managing sequential priority queues, and archiving ticket receipts.
+The Licensee explicitly acknowledges and agrees that:
+a) Official Tirumala Tirupati Devasthanams (TTD) portal login, CAPTCHA solutions,
+   SMS OTP verification, and payment authorizations must be manually authorized
+   and performed by the client or authorized operator.
+b) The Software does NOT bypass quotas, solve CAPTCHAs, or automate restricted
+   booking submissions on the official TTD website.
+c) Neither the Software nor its creators are affiliated with, endorsed by, or
+   officially connected to Tirumala Tirupati Devasthanams (TTD).
+
+3. PRIVACY & SENSITIVE CREDENTIALS
+The Software operates locally and offline. It does not transmit device telemetry,
+passwords, or pilgrim data to external networks.
+The Licensee must NEVER store TTD portal passwords, OTPs, UPI PINs, or banking
+credentials in this or any software.
+
+4. NON-DESTRUCTIVE LICENSING
+If an evaluation license expires, the Software gracefully transitions into a safe,
+read-only mode. The Software will never delete client databases, destroy records,
+or lock users out of their historical data.
+
+5. LIMITATION OF LIABILITY
+In no event shall Devotee Technologies be liable for any missed darshan quotas,
+network interruptions on third-party portals, or lost profits arising from the
+use or inability to use this software.
+
+================================================================================
+Copyright (C) 2026 Devotee Technologies. All Rights Reserved.
+================================================================================
