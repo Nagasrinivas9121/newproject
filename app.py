@@ -502,6 +502,7 @@ class App(tk.Tk):
 
         h_right = ttk.Frame(top_header)
         h_right.pack(side="right")
+
         ttk.Button(
             h_right,
             text="⚡ Start Assisted Booking Assistant",
@@ -509,33 +510,27 @@ class App(tk.Tk):
             command=self.open_assisted_booking,
         ).pack(side="right")
 
-        ttk.Button(
+        self.btn_header_upload = tk.Button(
             h_right,
-            text="📑 Reports",
-            command=lambda: self.on_nav_click("reports"),
-        ).pack(side="right", padx=(0, 6))
-
-        ttk.Button(
-            h_right,
-            text="📤 Export",
-            command=self.export_menu,
-        ).pack(side="right", padx=(0, 6))
-
-        self.btn_header_import = tk.Button(
-            h_right,
-            text="📥 Import Dataset",
+            text="📥 Upload Dataset",
             font=("Segoe UI", 9, "bold"),
-            bg="#0D5C75",
+            bg="#D97706",
             fg="#FFFFFF",
-            activebackground="#0A4B5F",
+            activebackground="#B45309",
             activeforeground="#FFFFFF",
             relief="flat",
-            padx=12,
+            padx=14,
             pady=4,
             cursor="hand2",
             command=self.open_dataset_import_modal,
         )
-        self.btn_header_import.pack(side="right", padx=(0, 8))
+        self.btn_header_upload.pack(side="right", padx=(0, 8))
+
+        ttk.Button(
+            h_right,
+            text="📑 Reports & Export",
+            command=lambda: self.on_nav_click("reports"),
+        ).pack(side="right", padx=(0, 6))
 
         # License Expiry & Notice Banner
         self.license_banner = tk.Frame(parent, bg="#FEF3C7", padx=16, pady=6)

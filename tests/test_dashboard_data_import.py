@@ -444,3 +444,100 @@ def test_import_history_batch_recording(isolated_env):
     assert b["admin_user"] == "super_admin"
     assert b["successful_records"] == 2  # 1 family + 1 devotee
     assert b["status"] == "COMPLETED"
+
+
+# =============================================================================
+# 9. WEB DASHBOARD DATASET UPLOAD REST API TESTS
+# =============================================================================
+
+def test_web_dashboard_header_contains_upload_button():
+    """Verify web dashboard HTML has the Upload Dataset button placed after Reports & Export and before Live TTD Demo."""
+    import web_app
+    client = web_app.app.test_client()
+    resp = client.get("/")
+    assert resp.status_code == 200
+    html = resp.data.decode("utf-8")
+
+    # Verify button exists with correct styling and placement
+    assert "btn-upload-dataset" in html
+    assert "📥 Upload Dataset" in html
+    assert "Reports &amp; Export" in html or "Reports & Export" in html
+    assert "Live TTD Demo" in html
+
+    # Verify exact ordering: Reports & Export -> Upload Dataset -> Live TTD Demo
+    idx_reports = html.find("Reports")
+    idx_upload = html.find("btn-upload-dataset")
+    idx_demo = html.find("Live TTD Demo")
+
+    assert idx_reports != -1
+    assert idx_upload != -1
+    assert idx_demo != -1
+    assert idx_reports < idx_upload < idx_demo, "Upload Dataset button must be immediately between Reports and Live TTD Demo"
+
+
+def test_web_dataset_parse_revalidate_commit_workflow(tmp_path, monkeypatch):
+    """Verify complete web dataset upload workflow: /api/dataset/parse -> /api/dataset/revalidate -> /api/dataset/commit."""
+    import io
+    import web_app
+
+    # Point web_app database to isolated test db
+    test_db = tmp_path / "web_test.db"
+    init_db(test_db)
+    monkeypatch.setattr(web_app.config, "DB_PATH", test_db)
+    import database
+    monkeypatch.setattr(database, "DB_PATH", test_db)
+
+    client = web_app.app.test_client()
+
+    # 1. Parse CSV upload
+    csv_content = (
+        "Family Name,Yatri Full Name,Contact Mobile,Age,Gender,Donation Amount\n"
+        "Web Bhaktas,Krishna Murthy,9848099881,50,Male,10000\n"
+        "Web Bhaktas,Lakshmi Devi,9848099881,46,Female,10000\n"
+        "Singular Devotee,Ramesh Kumar,9848099882,35,Male,10000\n"
+    )
+    data = {
+        "file": (io.BytesIO(csv_content.encode("utf-8")), "web_devotees.csv")
+    }
+    parse_resp = client.post("/api/dataset/parse", data=data, content_type="multipart/form-data")
+    assert parse_resp.status_code == 200
+    p_json = parse_resp.get_json()
+    assert p_json["success"] is True
+    assert p_json["file_name"] == "web_devotees.csv"
+    assert "token" in p_json
+    token = p_json["token"]
+    assert p_json["summary"]["total_rows"] == 3
+    assert p_json["summary"]["valid_records"] == 3
+    assert p_json["summary"]["invalid_records"] == 0
+
+    # 2. Revalidate with duplicate policy
+    reval_resp = client.post(
+        "/api/dataset/revalidate",
+        json={"token": token, "mapping": p_json["mapping"], "dup_policy": "SKIP"},
+    )
+    assert reval_resp.status_code == 200
+    r_json = reval_resp.get_json()
+    assert r_json["success"] is True
+    assert r_json["summary"]["valid_records"] == 3
+
+    # 3. Commit import
+    commit_resp = client.post(
+        "/api/dataset/commit",
+        json={"token": token, "mapping": p_json["mapping"], "dup_policy": "SKIP"},
+    )
+    assert commit_resp.status_code == 200
+    c_json = commit_resp.get_json()
+    assert c_json["success"] is True
+    assert c_json["successful_records"] == 5  # 2 families + 3 pilgrims
+    assert c_json["new_families"] == 2
+    assert c_json["new_pilgrims"] == 3
+    assert c_json["batch_id"].startswith("BATCH-")
+
+    # 4. Verify refreshed database stats
+    stats_resp = client.get("/api/stats")
+    assert stats_resp.status_code == 200
+    s_json = stats_resp.get_json()
+    assert s_json["total_families"] == 2
+    assert s_json["total_pilgrims"] == 3
+    assert s_json["total_donations"] == 20000
+

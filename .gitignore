@@ -22,6 +22,8 @@ data/*.db-wal
 data/backups/
 backups/
 data/logs/
+data/temp_imports/
+data/documents/
 *.log
 
 # Environment and IDE files

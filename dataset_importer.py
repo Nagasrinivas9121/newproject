@@ -792,6 +792,8 @@ def execute_dataset_import(
             "updated_records": updated_count,
             "skipped_records": skipped_count,
             "failed_records": failed_count,
+            "new_families": analysis.get("new_families_count", 0),
+            "new_pilgrims": analysis.get("new_pilgrims_count", 0),
             "message": (
                 f"Successfully completed batch '{batch_id}'. "
                 f"Processed {successful_count} record(s), updated {updated_count}, "

@@ -51,6 +51,25 @@ from analytics_export import (
     export_analytics_report_pdf,
     export_summary_to_csv,
 )
+import uuid
+import json
+from dataset_importer import (
+    read_dataset_file,
+    detect_column_mapping,
+    validate_and_analyze_dataset,
+    execute_dataset_import,
+    ALL_TARGET_FIELDS,
+    TARGET_FAMILY_FIELDS,
+    TARGET_PILGRIM_FIELDS,
+    DUP_POLICY_SKIP,
+    DUP_POLICY_UPDATE,
+    DUP_POLICY_CANCEL,
+)
+from backup_manager import create_database_backup
+
+UPLOAD_SESSIONS = {}
+TEMP_UPLOADS_DIR = Path(config.DATA_DIR) / "temp_imports"
+TEMP_UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -117,6 +136,11 @@ BASE_TEMPLATE = """
 
             <!-- Action Buttons -->
             <div class="flex items-center space-x-2">
+                <!-- 📥 Upload Dataset Action Button -->
+                <button onclick="triggerDatasetUpload()" id="btn-upload-dataset" title="Upload CSV or Excel dataset (.csv, .xlsx)" class="bg-amber-600 hover:bg-amber-500 active:bg-amber-700 text-white border border-amber-400/40 px-3.5 py-1.5 rounded-md text-xs font-bold flex items-center shadow-md transition duration-150 cursor-pointer">
+                    <i class="fa-solid fa-cloud-arrow-up mr-1.5 text-sm"></i> 📥 Upload Dataset
+                </button>
+
                 <a href="/demo-ttd-booking" class="bg-slate-700 hover:bg-slate-600 text-amber-300 border border-slate-600 px-3 py-1.5 rounded-md text-xs font-semibold flex items-center shadow transition duration-150">
                     <i class="fa-solid fa-flask mr-1.5"></i> 🎯 Live TTD Demo
                 </a>
@@ -213,18 +237,653 @@ BASE_TEMPLATE = """
         </div>
     </div>
 
-    <!-- Footer -->
-    <footer class="bg-slate-950 border-t border-slate-800 py-4 mt-auto">
-        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col sm:flex-row justify-between items-center text-xs text-slate-400">
-            <div>
-                SRIVANI Booking Manager &bull; Assisted Devotee Darshan Workflow Engine &bull; Strictly Offline Security
+    <!-- Hidden OS File Input for Dataset Upload -->
+    <input type="file" id="global-dataset-file-input" accept=".csv, .xlsx, .xls" class="hidden" onchange="handleDatasetFileSelected(this)">
+
+    <!-- Modern Dataset Upload & Ingestion Modal -->
+    <div id="dataset-upload-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-sm p-4 overflow-y-auto">
+        <div class="bg-slate-800 border border-amber-500/50 rounded-xl max-w-5xl w-full p-6 shadow-2xl relative text-slate-200 max-h-[92vh] flex flex-col">
+            <!-- Modal Header -->
+            <div class="flex items-center justify-between border-b border-slate-700 pb-3 mb-4">
+                <div class="flex items-center space-x-3">
+                    <div class="bg-amber-600 text-white w-10 h-10 rounded-lg flex items-center justify-center text-lg font-bold shadow">
+                        <i class="fa-solid fa-cloud-arrow-up"></i>
+                    </div>
+                    <div>
+                        <h2 class="text-lg font-bold text-white tracking-tight">📥 Upload Dataset — Devotee Ingestion Wizard</h2>
+                        <p class="text-xs text-slate-400">Universal CSV & Excel Ingestion &bull; Dynamic Column Mapping &bull; Strict Validation &bull; Zero Duplicates</p>
+                    </div>
+                </div>
+                <button onclick="closeDatasetUploadModal()" class="text-slate-400 hover:text-white text-2xl font-bold cursor-pointer">
+                    &times;
+                </button>
             </div>
-            <div class="mt-2 sm:mt-0">
-                Official Portal: <a href="https://ttdevasthanams.ap.gov.in" target="_blank" class="text-amber-400 hover:underline">ttdevasthanams.ap.gov.in</a>
+
+            <!-- Modal Body (Scrollable) -->
+            <div class="flex-grow overflow-y-auto pr-2 space-y-4 text-xs">
+                <!-- 1. File Selection & Progress Card -->
+                <div class="bg-slate-900 border border-slate-700 rounded-lg p-4">
+                    <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 mb-3">
+                        <div class="flex flex-wrap items-center gap-2">
+                            <span class="text-slate-400 font-semibold text-xs">Selected File:</span>
+                            <span id="upload-filename-display" class="font-bold text-amber-300 text-sm">None</span>
+                            <span id="upload-filesize-display" class="text-slate-400 text-xs">(0 KB)</span>
+                            <span id="upload-format-display" class="bg-slate-800 text-sky-400 border border-slate-700 text-2xs px-2 py-0.5 rounded font-mono uppercase">CSV/Excel</span>
+                        </div>
+                        <div class="flex items-center space-x-2">
+                            <button onclick="triggerDatasetUpload()" class="bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-600 px-3 py-1 rounded text-xs transition cursor-pointer">
+                                <i class="fa-solid fa-folder-open mr-1"></i> Choose Other File
+                            </button>
+                            <button onclick="closeDatasetUploadModal()" class="bg-slate-800 hover:bg-rose-900/40 text-slate-300 hover:text-rose-300 border border-slate-600 px-3 py-1 rounded text-xs transition cursor-pointer">
+                                <i class="fa-solid fa-xmark mr-1"></i> Cancel
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Upload Progress Bar -->
+                    <div id="upload-progress-container" class="space-y-1.5">
+                        <div class="flex justify-between text-2xs font-semibold">
+                            <span id="upload-progress-status" class="text-amber-400">Uploading dataset...</span>
+                            <span id="upload-progress-percent" class="text-slate-300">0%</span>
+                        </div>
+                        <div class="w-full bg-slate-950 rounded-full h-2.5 overflow-hidden border border-slate-800">
+                            <div id="upload-progress-bar" class="bg-gradient-to-r from-amber-500 to-emerald-500 h-2.5 rounded-full transition-all duration-300" style="width: 0%"></div>
+                        </div>
+                    </div>
+
+                    <!-- Error Alert Box -->
+                    <div id="upload-error-alert" class="hidden mt-3 p-3 bg-rose-950/70 border border-rose-700 rounded text-rose-200 text-xs">
+                        <i class="fa-solid fa-triangle-exclamation mr-1.5 text-rose-400"></i>
+                        <span id="upload-error-message"></span>
+                    </div>
+                </div>
+
+                <!-- 2. Tabs: Data Preview, Column Mapping, Validation & Errors, Summary & Options -->
+                <div id="upload-workbench" class="hidden space-y-3">
+                    <!-- Tab Buttons -->
+                    <div class="flex border-b border-slate-700 space-x-2">
+                        <button onclick="switchUploadTab('preview')" id="tab-btn-preview" class="px-4 py-2 text-xs font-bold border-b-2 border-amber-500 text-amber-400 cursor-pointer">
+                            <i class="fa-solid fa-table mr-1.5"></i> Data Preview
+                        </button>
+                        <button onclick="switchUploadTab('mapping')" id="tab-btn-mapping" class="px-4 py-2 text-xs font-bold border-b-2 border-transparent text-slate-400 hover:text-white cursor-pointer">
+                            <i class="fa-solid fa-network-wired mr-1.5"></i> Column Mapping
+                        </button>
+                        <button onclick="switchUploadTab('errors')" id="tab-btn-errors" class="px-4 py-2 text-xs font-bold border-b-2 border-transparent text-slate-400 hover:text-white cursor-pointer">
+                            <i class="fa-solid fa-circle-exclamation mr-1.5"></i> Validation Errors (<span id="tab-error-count">0</span>)
+                        </button>
+                        <button onclick="switchUploadTab('summary')" id="tab-btn-summary" class="px-4 py-2 text-xs font-bold border-b-2 border-transparent text-slate-400 hover:text-white cursor-pointer">
+                            <i class="fa-solid fa-sliders mr-1.5"></i> Import Options & Summary
+                        </button>
+                    </div>
+
+                    <!-- Content 1: Data Preview Table -->
+                    <div id="tab-content-preview" class="space-y-2">
+                        <div class="text-slate-400 text-2xs flex justify-between items-center">
+                            <span>Showing first 50 rows of uploaded dataset with horizontal scrolling:</span>
+                            <span id="preview-row-count" class="font-bold text-slate-300">0 rows</span>
+                        </div>
+                        <div class="overflow-x-auto max-h-64 border border-slate-700 rounded-lg bg-slate-950">
+                            <table class="w-full text-left text-2xs text-slate-300 whitespace-nowrap">
+                                <thead id="preview-table-head" class="bg-slate-900 text-slate-400 sticky top-0 uppercase border-b border-slate-700"></thead>
+                                <tbody id="preview-table-body" class="divide-y divide-slate-800"></tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- Content 2: Column Mapping -->
+                    <div id="tab-content-mapping" class="hidden space-y-2">
+                        <p class="text-slate-400 text-2xs">Match spreadsheet headers to SRIVANI database fields. Unmatched columns are marked in amber:</p>
+                        <div id="mapping-grid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5 max-h-64 overflow-y-auto p-1"></div>
+                    </div>
+
+                    <!-- Content 3: Validation Errors -->
+                    <div id="tab-content-errors" class="hidden space-y-2">
+                        <div class="flex justify-between items-center">
+                            <span id="validation-errors-status" class="text-slate-300 text-xs font-semibold"></span>
+                            <button onclick="downloadValidationErrorsCSV()" id="btn-export-errors-csv" class="bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 px-3 py-1 rounded text-2xs cursor-pointer">
+                                <i class="fa-solid fa-file-csv mr-1"></i> Export Error Report
+                            </button>
+                        </div>
+                        <div class="overflow-x-auto max-h-64 border border-slate-700 rounded-lg bg-slate-950">
+                            <table class="w-full text-left text-2xs text-slate-300">
+                                <thead class="bg-slate-900 text-slate-400 sticky top-0 uppercase border-b border-slate-700">
+                                    <tr>
+                                        <th class="px-3 py-2 w-16">Row #</th>
+                                        <th class="px-3 py-2 w-32">Column</th>
+                                        <th class="px-3 py-2 w-32">Value</th>
+                                        <th class="px-3 py-2">Error Description</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="errors-table-body" class="divide-y divide-slate-800"></tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- Content 4: Summary & Options -->
+                    <div id="tab-content-summary" class="hidden space-y-4">
+                        <!-- 7 Summary Cards -->
+                        <div class="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2 text-center">
+                            <div class="bg-slate-900 border border-slate-700 p-2.5 rounded">
+                                <span class="text-3xs font-semibold uppercase text-slate-400">Total Rows</span>
+                                <div id="sum-total-rows" class="text-base font-bold text-white mt-0.5">0</div>
+                            </div>
+                            <div class="bg-slate-900 border border-slate-700 p-2.5 rounded">
+                                <span class="text-3xs font-semibold uppercase text-emerald-400">Valid</span>
+                                <div id="sum-valid-rows" class="text-base font-bold text-emerald-400 mt-0.5">0</div>
+                            </div>
+                            <div class="bg-slate-900 border border-slate-700 p-2.5 rounded">
+                                <span class="text-3xs font-semibold uppercase text-rose-400">Invalid</span>
+                                <div id="sum-invalid-rows" class="text-base font-bold text-rose-400 mt-0.5">0</div>
+                            </div>
+                            <div class="bg-slate-900 border border-slate-700 p-2.5 rounded">
+                                <span class="text-3xs font-semibold uppercase text-sky-400">New Fams</span>
+                                <div id="sum-new-families" class="text-base font-bold text-sky-400 mt-0.5">0</div>
+                            </div>
+                            <div class="bg-slate-900 border border-slate-700 p-2.5 rounded">
+                                <span class="text-3xs font-semibold uppercase text-indigo-400">New Devotees</span>
+                                <div id="sum-new-pilgrims" class="text-base font-bold text-indigo-400 mt-0.5">0</div>
+                            </div>
+                            <div class="bg-slate-900 border border-slate-700 p-2.5 rounded">
+                                <span class="text-3xs font-semibold uppercase text-amber-400">Duplicates</span>
+                                <div id="sum-duplicate-rows" class="text-base font-bold text-amber-400 mt-0.5">0</div>
+                            </div>
+                            <div class="bg-slate-900 border border-slate-700 p-2.5 rounded">
+                                <span class="text-3xs font-semibold uppercase text-slate-400">Skipped</span>
+                                <div id="sum-skipped-rows" class="text-base font-bold text-slate-400 mt-0.5">0</div>
+                            </div>
+                        </div>
+
+                        <!-- Duplicate Policy Box -->
+                        <div class="bg-slate-900 border border-slate-700 rounded-lg p-3.5 space-y-2">
+                            <span class="font-bold text-slate-200 text-xs block mb-1">
+                                <i class="fa-solid fa-copy text-amber-400 mr-1.5"></i> Duplicate Record Handling Policy:
+                            </span>
+                            <label class="flex items-start space-x-2.5 cursor-pointer">
+                                <input type="radio" name="dup_policy" value="SKIP" checked onchange="onDuplicatePolicyChanged()" class="mt-0.5 text-amber-600 focus:ring-amber-500">
+                                <div>
+                                    <span class="font-semibold text-white text-xs">Skip duplicate records (Recommended)</span>
+                                    <p class="text-2xs text-slate-400">Preserves existing records. When importing pilgrims belonging to an existing family, reuses the family ID without creating duplicate families.</p>
+                                </div>
+                            </label>
+                            <label class="flex items-start space-x-2.5 cursor-pointer">
+                                <input type="radio" name="dup_policy" value="UPDATE" onchange="onDuplicatePolicyChanged()" class="mt-0.5 text-amber-600 focus:ring-amber-500">
+                                <div>
+                                    <span class="font-semibold text-white text-xs">Update existing records</span>
+                                    <p class="text-2xs text-slate-400">Updates existing family and devotee records with new information after confirmation.</p>
+                                </div>
+                            </label>
+                            <label class="flex items-start space-x-2.5 cursor-pointer">
+                                <input type="radio" name="dup_policy" value="CANCEL" onchange="onDuplicatePolicyChanged()" class="mt-0.5 text-amber-600 focus:ring-amber-500">
+                                <div>
+                                    <span class="font-semibold text-white text-xs">Cancel import if duplicates found</span>
+                                    <p class="text-2xs text-slate-400">Strict zero-tolerance policy; aborts entire transaction if any duplicate is found.</p>
+                                </div>
+                            </label>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Modal Sticky Footer -->
+            <div class="border-t border-slate-700 pt-3 mt-3 flex flex-col sm:flex-row justify-between items-center gap-3">
+                <div id="modal-bottom-status" class="text-xs font-semibold text-slate-300">
+                    Ready to validate records.
+                </div>
+                <div class="flex items-center space-x-2">
+                    <button onclick="closeDatasetUploadModal()" class="bg-slate-700 hover:bg-slate-600 text-white px-4 py-2 rounded text-xs font-semibold transition cursor-pointer">
+                        Cancel
+                    </button>
+                    <button onclick="confirmAndCommitImport()" id="btn-confirm-import" disabled class="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white px-5 py-2 rounded text-xs font-bold flex items-center shadow-lg transition cursor-pointer">
+                        <i class="fa-solid fa-check-double mr-1.5"></i> Confirm & Import Dataset
+                    </button>
+                </div>
             </div>
         </div>
-    </footer>
+    </div>
 
+    <!-- Dataset Upload Client-Side Controller Script -->
+    <script>
+    var currentUploadData = null;
+
+    function triggerDatasetUpload() {
+        var input = document.getElementById('global-dataset-file-input');
+        input.value = '';
+        input.click();
+    }
+
+    function closeDatasetUploadModal() {
+        document.getElementById('dataset-upload-modal').classList.add('hidden');
+    }
+
+    function formatBytes(bytes) {
+        if (!bytes || bytes === 0) return '0 B';
+        var k = 1024;
+        var sizes = ['B', 'KB', 'MB', 'GB'];
+        var i = Math.floor(Math.log(bytes) / Math.log(k));
+        return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+    }
+
+    function handleDatasetFileSelected(input) {
+        if (!input.files || input.files.length === 0) return;
+        var file = input.files[0];
+
+        var modal = document.getElementById('dataset-upload-modal');
+        modal.classList.remove('hidden');
+
+        document.getElementById('upload-filename-display').innerText = file.name;
+        document.getElementById('upload-filesize-display').innerText = '(' + formatBytes(file.size) + ')';
+        var ext = file.name.split('.').pop().toUpperCase();
+        document.getElementById('upload-format-display').innerText = ext;
+
+        document.getElementById('upload-error-alert').classList.add('hidden');
+        document.getElementById('upload-workbench').classList.add('hidden');
+        document.getElementById('upload-progress-container').classList.remove('hidden');
+        document.getElementById('btn-confirm-import').disabled = true;
+
+        var formData = new FormData();
+        formData.append('file', file);
+
+        var xhr = new XMLHttpRequest();
+        xhr.open('POST', '/api/dataset/parse', true);
+
+        xhr.upload.onprogress = function(e) {
+            if (e.lengthComputable) {
+                var pct = Math.round((e.loaded / e.total) * 90);
+                document.getElementById('upload-progress-bar').style.width = pct + '%';
+                document.getElementById('upload-progress-percent').innerText = pct + '%';
+                document.getElementById('upload-progress-status').innerText = 'Uploading dataset (' + pct + '%)...';
+            }
+        };
+
+        xhr.onload = function() {
+            if (xhr.status === 200) {
+                try {
+                    var resp = JSON.parse(xhr.responseText);
+                    if (resp.success) {
+                        document.getElementById('upload-progress-bar').style.width = '100%';
+                        document.getElementById('upload-progress-percent').innerText = '100%';
+                        document.getElementById('upload-progress-status').innerText = 'Dataset parsed and validated!';
+                        currentUploadData = resp;
+                        renderUploadWorkbench(resp);
+                    } else {
+                        showUploadError(resp.error || 'Failed to parse dataset.');
+                    }
+                } catch(e) {
+                    showUploadError('Error parsing server response: ' + e);
+                }
+            } else {
+                try {
+                    var errResp = JSON.parse(xhr.responseText);
+                    showUploadError(errResp.error || ('Upload failed with status ' + xhr.status));
+                } catch(e) {
+                    showUploadError('Upload failed with status ' + xhr.status);
+                }
+            }
+        };
+
+        xhr.onerror = function() {
+            showUploadError('Network error while uploading dataset file.');
+        };
+
+        xhr.send(formData);
+    }
+
+    function showUploadError(msg) {
+        document.getElementById('upload-progress-container').classList.add('hidden');
+        var alertBox = document.getElementById('upload-error-alert');
+        alertBox.classList.remove('hidden');
+        document.getElementById('upload-error-message').innerText = msg;
+        document.getElementById('modal-bottom-status').innerText = 'Error: ' + msg;
+    }
+
+    function switchUploadTab(tabName) {
+        ['preview', 'mapping', 'errors', 'summary'].forEach(function(t) {
+            document.getElementById('tab-content-' + t).classList.add('hidden');
+            var btn = document.getElementById('tab-btn-' + t);
+            btn.className = 'px-4 py-2 text-xs font-bold border-b-2 border-transparent text-slate-400 hover:text-white cursor-pointer';
+        });
+        document.getElementById('tab-content-' + tabName).classList.remove('hidden');
+        var activeBtn = document.getElementById('tab-btn-' + tabName);
+        activeBtn.className = 'px-4 py-2 text-xs font-bold border-b-2 border-amber-500 text-amber-400 cursor-pointer';
+    }
+
+    function renderUploadWorkbench(data) {
+        document.getElementById('upload-workbench').classList.remove('hidden');
+
+        // 1. Data Preview Table
+        renderPreviewTable(data.headers, data.preview_rows, data.mapping);
+
+        // 2. Column Mapping Grid
+        renderMappingGrid(data.headers, data.mapping, data.target_fields);
+
+        // 3. Validation Errors Table
+        renderValidationErrors(data.errors || []);
+
+        // 4. Summary Badges
+        updateSummaryMetrics(data.summary || {});
+
+        // 5. Update bottom status & confirm button
+        var valid = (data.summary && data.summary.valid_records) ? data.summary.valid_records : 0;
+        var invalid = (data.summary && data.summary.invalid_records) ? data.summary.invalid_records : 0;
+        var tot = (data.summary && data.summary.total_rows) ? data.summary.total_rows : 0;
+        document.getElementById('modal-bottom-status').innerText = '📊 Total: ' + tot + ' | ✅ Valid: ' + valid + ' | ⚠️ Invalid: ' + invalid;
+
+        document.getElementById('btn-confirm-import').disabled = (valid <= 0);
+        switchUploadTab('preview');
+    }
+
+    function renderPreviewTable(headers, rows, mapping) {
+        var headTr = '<tr>';
+        headTr += '<th class="px-3 py-2 bg-slate-900 border-r border-slate-800 text-amber-400">Row #</th>';
+        headTr += '<th class="px-3 py-2 bg-slate-900 border-r border-slate-800">Family ID</th>';
+        headTr += '<th class="px-3 py-2 bg-slate-900 border-r border-slate-800">Family Name</th>';
+        headTr += '<th class="px-3 py-2 bg-slate-900 border-r border-slate-800">Pilgrim Name</th>';
+        headTr += '<th class="px-3 py-2 bg-slate-900 border-r border-slate-800">Age</th>';
+        headTr += '<th class="px-3 py-2 bg-slate-900 border-r border-slate-800">Gender</th>';
+        headTr += '<th class="px-3 py-2 bg-slate-900 border-r border-slate-800">Mobile Number</th>';
+
+        // Find non-core headers
+        var coreTargets = ['family_code', 'family_name', 'full_name', 'age', 'gender', 'phone'];
+        var targetToHdr = {};
+        for (var h in mapping) {
+            var t = mapping[h];
+            if (t && !targetToHdr[t]) targetToHdr[t] = h;
+        }
+
+        var coreHdrsSet = {};
+        coreTargets.forEach(function(k) { if (targetToHdr[k]) coreHdrsSet[targetToHdr[k]] = true; });
+        var otherHdrs = headers.filter(function(h) { return !coreHdrsSet[h]; });
+
+        otherHdrs.forEach(function(h) {
+            headTr += '<th class="px-3 py-2 bg-slate-900 border-r border-slate-800">' + escapeHtml(h) + '</th>';
+        });
+        headTr += '</tr>';
+        document.getElementById('preview-table-head').innerHTML = headTr;
+
+        var bodyHtml = '';
+        var fIdHdr = targetToHdr['family_code'];
+        var fNameHdr = targetToHdr['family_name'];
+        var pNameHdr = targetToHdr['full_name'];
+        var ageHdr = targetToHdr['age'];
+        var genHdr = targetToHdr['gender'];
+        var phoneHdr = targetToHdr['phone'];
+
+        rows.forEach(function(r, idx) {
+            var rowNum = r['_row_num'] || (idx + 1);
+            var famId = fIdHdr ? (r[fIdHdr] || '') : '';
+            var famName = fNameHdr ? (r[fNameHdr] || '') : '';
+            var pilName = pNameHdr ? (r[pNameHdr] || '') : '';
+            var age = ageHdr ? (r[ageHdr] || '') : '';
+            var gen = genHdr ? (r[genHdr] || '') : '';
+            var phone = phoneHdr ? (r[phoneHdr] || '') : '';
+
+            if (!famName && pilName) famName = pilName + ' Family';
+
+            bodyHtml += '<tr class="hover:bg-slate-800/60">';
+            bodyHtml += '<td class="px-3 py-1.5 font-mono text-amber-400 font-bold border-r border-slate-800">' + rowNum + '</td>';
+            bodyHtml += '<td class="px-3 py-1.5 font-mono text-slate-300 border-r border-slate-800">' + escapeHtml(famId) + '</td>';
+            bodyHtml += '<td class="px-3 py-1.5 font-semibold text-white border-r border-slate-800">' + escapeHtml(famName) + '</td>';
+            bodyHtml += '<td class="px-3 py-1.5 text-slate-200 border-r border-slate-800">' + escapeHtml(pilName) + '</td>';
+            bodyHtml += '<td class="px-3 py-1.5 text-center border-r border-slate-800">' + escapeHtml(age) + '</td>';
+            bodyHtml += '<td class="px-3 py-1.5 text-center border-r border-slate-800">' + escapeHtml(gen) + '</td>';
+            bodyHtml += '<td class="px-3 py-1.5 font-mono border-r border-slate-800">' + escapeHtml(phone) + '</td>';
+
+            otherHdrs.forEach(function(h) {
+                bodyHtml += '<td class="px-3 py-1.5 text-slate-400 border-r border-slate-800">' + escapeHtml(r[h] || '') + '</td>';
+            });
+            bodyHtml += '</tr>';
+        });
+
+        document.getElementById('preview-table-body').innerHTML = bodyHtml;
+        document.getElementById('preview-row-count').innerText = rows.length + ' rows previewed';
+    }
+
+    function renderMappingGrid(headers, mapping, targetFields) {
+        var grid = document.getElementById('mapping-grid');
+        grid.innerHTML = '';
+
+        headers.forEach(function(h) {
+            var currentTarget = mapping[h] || '';
+            var isMatched = Boolean(currentTarget);
+
+            var cell = document.createElement('div');
+            cell.className = 'bg-slate-900 border border-slate-800 p-2.5 rounded-lg flex flex-col justify-between space-y-1.5';
+
+            var topRow = document.createElement('div');
+            topRow.className = 'flex items-center justify-between';
+
+            var lbl = document.createElement('span');
+            lbl.className = 'font-bold text-slate-200 text-xs truncate';
+            lbl.title = h;
+            lbl.innerText = h.length > 20 ? (h.substring(0, 18) + '...') : h;
+            topRow.appendChild(lbl);
+
+            var badge = document.createElement('span');
+            badge.id = 'mapping-badge-' + sanitizeId(h);
+            badge.className = isMatched
+                ? 'text-3xs font-semibold px-2 py-0.5 rounded bg-emerald-950 text-emerald-300 border border-emerald-800'
+                : 'text-3xs font-semibold px-2 py-0.5 rounded bg-amber-950 text-amber-300 border border-amber-800';
+            badge.innerText = isMatched ? 'Matched' : 'Unmatched';
+            topRow.appendChild(badge);
+            cell.appendChild(topRow);
+
+            var sel = document.createElement('select');
+            sel.className = 'bg-slate-950 border border-slate-700 text-slate-200 text-2xs rounded px-2 py-1 outline-none w-full focus:border-amber-500';
+
+            var optSkip = document.createElement('option');
+            optSkip.value = '';
+            optSkip.innerText = '-- Unmatched / Skip --';
+            sel.appendChild(optSkip);
+
+            targetFields.forEach(function(t) {
+                var opt = document.createElement('option');
+                opt.value = t[0];
+                opt.innerText = t[0] + ' (' + t[1] + ')';
+                if (t[0] === currentTarget) opt.selected = true;
+                sel.appendChild(opt);
+            });
+
+            sel.onchange = function() {
+                onColumnMappingChanged(h, sel.value);
+            };
+
+            cell.appendChild(sel);
+            grid.appendChild(cell);
+        });
+    }
+
+    function sanitizeId(str) {
+        return str.replace(/[^a-zA-Z0-9]/g, '_');
+    }
+
+    function onColumnMappingChanged(header, newTarget) {
+        if (!currentUploadData) return;
+        currentUploadData.mapping[header] = newTarget || null;
+
+        var badge = document.getElementById('mapping-badge-' + sanitizeId(header));
+        if (badge) {
+            if (newTarget) {
+                badge.className = 'text-3xs font-semibold px-2 py-0.5 rounded bg-emerald-950 text-emerald-300 border border-emerald-800';
+                badge.innerText = 'Matched';
+            } else {
+                badge.className = 'text-3xs font-semibold px-2 py-0.5 rounded bg-amber-950 text-amber-300 border border-amber-800';
+                badge.innerText = 'Unmatched';
+            }
+        }
+
+        revalidateCurrentUpload();
+    }
+
+    function onDuplicatePolicyChanged() {
+        revalidateCurrentUpload();
+    }
+
+    function getSelectedDupPolicy() {
+        var radios = document.getElementsByName('dup_policy');
+        for (var i = 0; i < radios.length; i++) {
+            if (radios[i].checked) return radios[i].value;
+        }
+        return 'SKIP';
+    }
+
+    function revalidateCurrentUpload() {
+        if (!currentUploadData) return;
+        var policy = getSelectedDupPolicy();
+
+        fetch('/api/dataset/revalidate', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                token: currentUploadData.token,
+                mapping: currentUploadData.mapping,
+                dup_policy: policy
+            })
+        })
+        .then(function(r) { return r.json(); })
+        .then(function(res) {
+            if (res.success) {
+                currentUploadData.summary = res.summary;
+                currentUploadData.errors = res.errors;
+                updateSummaryMetrics(res.summary);
+                renderValidationErrors(res.errors || []);
+                renderPreviewTable(currentUploadData.headers, currentUploadData.preview_rows, currentUploadData.mapping);
+
+                var valid = res.summary.valid_records || 0;
+                var invalid = res.summary.invalid_records || 0;
+                var tot = res.summary.total_rows || 0;
+                document.getElementById('modal-bottom-status').innerText = '📊 Total: ' + tot + ' | ✅ Valid: ' + valid + ' | ⚠️ Invalid: ' + invalid;
+                document.getElementById('btn-confirm-import').disabled = (valid <= 0);
+            }
+        })
+        .catch(function(err) {
+            console.error('Re-validation error:', err);
+        });
+    }
+
+    function renderValidationErrors(errors) {
+        document.getElementById('tab-error-count').innerText = errors.length;
+        var tbody = document.getElementById('errors-table-body');
+        tbody.innerHTML = '';
+
+        if (!errors || errors.length === 0) {
+            document.getElementById('validation-errors-status').innerText = '✅ Zero errors found. All records meet strict data quality rules.';
+            document.getElementById('validation-errors-status').className = 'text-emerald-400 text-xs font-semibold';
+            tbody.innerHTML = '<tr><td colspan="4" class="px-4 py-6 text-center text-slate-500">No validation errors detected.</td></tr>';
+            return;
+        }
+
+        document.getElementById('validation-errors-status').innerText = '⚠️ ' + errors.length + ' error(s) flagged:';
+        document.getElementById('validation-errors-status').className = 'text-rose-400 text-xs font-semibold';
+
+        errors.forEach(function(e) {
+            var tr = document.createElement('tr');
+            tr.className = 'hover:bg-slate-800/60';
+            tr.innerHTML = '<td class="px-3 py-2 font-mono text-amber-400 font-bold">' + (e.row || '') + '</td>' +
+                           '<td class="px-3 py-2 text-slate-300 font-semibold">' + escapeHtml(e.column || '') + '</td>' +
+                           '<td class="px-3 py-2 font-mono text-rose-300">' + escapeHtml(e.value || '') + '</td>' +
+                           '<td class="px-3 py-2 text-slate-200">' + escapeHtml(e.error || '') + '</td>';
+            tbody.appendChild(tr);
+        });
+    }
+
+    function updateSummaryMetrics(s) {
+        document.getElementById('sum-total-rows').innerText = s.total_rows || 0;
+        document.getElementById('sum-valid-rows').innerText = s.valid_records || 0;
+        document.getElementById('sum-invalid-rows').innerText = s.invalid_records || 0;
+        document.getElementById('sum-new-families').innerText = s.new_families || 0;
+        document.getElementById('sum-new-pilgrims').innerText = s.new_pilgrims || 0;
+        document.getElementById('sum-duplicate-rows').innerText = s.duplicate_records || 0;
+        document.getElementById('sum-skipped-rows').innerText = s.records_to_skip || 0;
+    }
+
+    function confirmAndCommitImport() {
+        if (!currentUploadData || !currentUploadData.summary) return;
+        var s = currentUploadData.summary;
+        var policy = getSelectedDupPolicy();
+
+        if (policy === 'UPDATE') {
+            if (!confirm('⚠️ Update Policy Selected:\\nExisting database records will be updated with new data.\\n\\nDo you want to proceed?')) {
+                return;
+            }
+        }
+
+        var confirmMsg = '📋 Confirm Dataset Import:\\n\\n' +
+                         '• Total Rows: ' + s.total_rows + '\\n' +
+                         '• Valid Records to Commit: ' + s.valid_records + '\\n' +
+                         '• Rejected Invalid Rows: ' + s.invalid_records + '\\n' +
+                         '• New Families to Create: ' + s.new_families + '\\n' +
+                         '• New Pilgrims to Link: ' + s.new_pilgrims + '\\n' +
+                         '• Duplicate Policy: ' + policy + '\\n\\n' +
+                         'An automatic SQLite database backup will be created before committing.\\n' +
+                         'Proceed with committing to database?';
+
+        if (!confirm(confirmMsg)) return;
+
+        var btn = document.getElementById('btn-confirm-import');
+        btn.disabled = true;
+        btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin mr-1.5"></i> Committing...';
+
+        fetch('/api/dataset/commit', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                token: currentUploadData.token,
+                mapping: currentUploadData.mapping,
+                dup_policy: policy
+            })
+        })
+        .then(function(r) { return r.json(); })
+        .then(function(res) {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="fa-solid fa-check-double mr-1.5"></i> Confirm & Import Dataset';
+
+            if (res.success) {
+                alert('✅ ' + (res.message || 'Dataset imported successfully!') + '\\n\\n' +
+                      '• Records Imported: ' + (res.successful_records || s.valid_records) + '\\n' +
+                      '• Batch ID: ' + (res.batch_id || 'N/A') + '\\n\\n' +
+                      'Dashboard statistics will now refresh.');
+                closeDatasetUploadModal();
+                window.location.reload();
+            } else {
+                alert('❌ Import Failed:\\n' + (res.error || 'Unknown database error occurred.'));
+            }
+        })
+        .catch(function(err) {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="fa-solid fa-check-double mr-1.5"></i> Confirm & Import Dataset';
+            alert('❌ Network/Server Error while committing import:\\n' + err);
+        });
+    }
+
+    function downloadValidationErrorsCSV() {
+        if (!currentUploadData || !currentUploadData.errors || currentUploadData.errors.length === 0) {
+            alert('No validation errors to export.');
+            return;
+        }
+        var csv = 'Row Number,Column Name,Problematic Value,Error Description\\r\\n';
+        currentUploadData.errors.forEach(function(e) {
+            csv += '"' + (e.row || '') + '","' + (e.column || '').replace(/"/g, '""') + '","' + (e.value || '').toString().replace(/"/g, '""') + '","' + (e.error || '').replace(/"/g, '""') + '"\\r\\n';
+        });
+        var blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement('a');
+        a.href = url;
+        a.download = 'validation_errors_' + Date.now() + '.csv';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+    }
+
+    function escapeHtml(text) {
+        if (text === null || text === undefined) return '';
+        return String(text)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
+    }
+    </script>
 </body>
 </html>
 """
@@ -993,6 +1652,158 @@ def api_export_report_pdf():
     temp_p = Path(config.DATA_DIR) / f"srivani_report_{rep_type}_{datetime.datetime.now():%Y%m%d_%H%M%S}.pdf"
     generate_printable_pdf_report(rep_type, temp_p)
     return send_file(temp_p, as_attachment=True, download_name=f"Srivani_Report_{rep_type}.pdf")
+
+
+# -----------------------------------------------------------------------------
+# Dataset Upload & Import REST Endpoints
+# -----------------------------------------------------------------------------
+
+@app.route("/api/dataset/parse", methods=["POST"])
+def api_dataset_parse():
+    if "file" not in request.files:
+        return jsonify({"success": False, "error": "No file uploaded."}), 400
+
+    file = request.files["file"]
+    if not file or not file.filename:
+        return jsonify({"success": False, "error": "No file selected."}), 400
+
+    orig_name = file.filename
+    ext = Path(orig_name).suffix.lower()
+    if ext not in [".csv", ".xlsx", ".xls"]:
+        return jsonify({"success": False, "error": f"Unsupported file extension '{ext}'. Only .csv, .xlsx, .xls are supported."}), 400
+
+    token = uuid.uuid4().hex
+    safe_name = "".join(c for c in orig_name if c.isalnum() or c in (".", "_", "-")).strip() or f"dataset{ext}"
+    saved_path = TEMP_UPLOADS_DIR / f"{token}_{safe_name}"
+
+    try:
+        file.save(str(saved_path))
+        headers, raw_rows, file_size, fmt = read_dataset_file(saved_path)
+        if not raw_rows:
+            return jsonify({"success": False, "error": "The uploaded dataset contains no data rows."}), 400
+
+        mapping = detect_column_mapping(headers)
+        analysis = validate_and_analyze_dataset(headers, raw_rows, mapping, dup_policy=DUP_POLICY_SKIP, db_path=Path(config.DB_PATH))
+
+        UPLOAD_SESSIONS[token] = {
+            "token": token,
+            "file_path": str(saved_path),
+            "file_name": orig_name,
+            "file_size": file_size,
+            "format": fmt,
+            "headers": headers,
+            "raw_rows": raw_rows,
+            "mapping": mapping,
+            "dup_policy": DUP_POLICY_SKIP,
+            "analysis": analysis,
+        }
+
+        summary = {
+            "total_rows": analysis.get("total_rows", len(raw_rows)),
+            "valid_records": analysis.get("valid_rows_count", 0),
+            "invalid_records": analysis.get("invalid_rows_count", 0),
+            "new_families": analysis.get("new_families_count", 0),
+            "new_pilgrims": analysis.get("new_pilgrims_count", 0),
+            "duplicate_records": analysis.get("duplicate_records_count", 0),
+            "records_to_skip": analysis.get("skipped_records_count", 0),
+        }
+
+        return jsonify({
+            "success": True,
+            "token": token,
+            "file_name": orig_name,
+            "file_size": file_size,
+            "format": fmt,
+            "headers": headers,
+            "mapping": mapping,
+            "target_fields": [[f[0], f[1]] for f in ALL_TARGET_FIELDS],
+            "preview_rows": raw_rows[:150],
+            "summary": summary,
+            "errors": analysis.get("validation_errors", []),
+        })
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/dataset/revalidate", methods=["POST"])
+def api_dataset_revalidate():
+    data = request.get_json(silent=True) or {}
+    token = data.get("token")
+    mapping = data.get("mapping") or {}
+    dup_policy_str = data.get("dup_policy", "SKIP")
+
+    if not token or token not in UPLOAD_SESSIONS:
+        return jsonify({"success": False, "error": "Upload session expired or invalid. Please re-upload your file."}), 404
+
+    session = UPLOAD_SESSIONS[token]
+    policy = DUP_POLICY_UPDATE if dup_policy_str == "UPDATE" else (DUP_POLICY_CANCEL if dup_policy_str == "CANCEL" else DUP_POLICY_SKIP)
+
+    try:
+        analysis = validate_and_analyze_dataset(session["headers"], session["raw_rows"], mapping, dup_policy=policy, db_path=Path(config.DB_PATH))
+        session["mapping"] = mapping
+        session["dup_policy"] = policy
+        session["analysis"] = analysis
+
+        summary = {
+            "total_rows": analysis.get("total_rows", len(session["raw_rows"])),
+            "valid_records": analysis.get("valid_rows_count", 0),
+            "invalid_records": analysis.get("invalid_rows_count", 0),
+            "new_families": analysis.get("new_families_count", 0),
+            "new_pilgrims": analysis.get("new_pilgrims_count", 0),
+            "duplicate_records": analysis.get("duplicate_records_count", 0),
+            "records_to_skip": analysis.get("skipped_records_count", 0),
+        }
+
+        return jsonify({
+            "success": True,
+            "summary": summary,
+            "errors": analysis.get("validation_errors", []),
+        })
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 400
+
+
+@app.route("/api/dataset/commit", methods=["POST"])
+def api_dataset_commit():
+    data = request.get_json(silent=True) or {}
+    token = data.get("token")
+    mapping = data.get("mapping")
+    dup_policy_str = data.get("dup_policy", "SKIP")
+
+    if not token or token not in UPLOAD_SESSIONS:
+        return jsonify({"success": False, "error": "Upload session expired or invalid. Please re-upload your file."}), 404
+
+    session = UPLOAD_SESSIONS[token]
+    policy = DUP_POLICY_UPDATE if dup_policy_str == "UPDATE" else (DUP_POLICY_CANCEL if dup_policy_str == "CANCEL" else DUP_POLICY_SKIP)
+    active_mapping = mapping if mapping is not None else session["mapping"]
+
+    try:
+        analysis = validate_and_analyze_dataset(session["headers"], session["raw_rows"], active_mapping, dup_policy=policy, db_path=Path(config.DB_PATH))
+        if analysis.get("valid_rows_count", 0) <= 0:
+            return jsonify({"success": False, "error": "No valid records to import. Please check validation errors."}), 400
+
+        res = execute_dataset_import(
+            analysis=analysis,
+            file_name=session["file_name"],
+            file_size=session["file_size"],
+            file_format=session["format"],
+            column_mapping=active_mapping,
+            admin_user="admin",
+            db_path=Path(config.DB_PATH),
+        )
+
+        return jsonify({
+            "success": True,
+            "message": f"Successfully imported {res.get('successful_records', 0)} devotee/family record(s) into database.",
+            "batch_id": res.get("batch_id"),
+            "successful_records": res.get("successful_records", 0),
+            "new_families": res.get("new_families", analysis.get("new_families_count", 0)),
+            "new_pilgrims": res.get("new_pilgrims", analysis.get("new_pilgrims_count", 0)),
+            "updated_records": res.get("updated_records", 0),
+            "skipped_records": res.get("skipped_records", 0),
+        })
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
 
 
 if __name__ == "__main__":
