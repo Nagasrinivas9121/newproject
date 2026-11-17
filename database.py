@@ -280,6 +280,7 @@ def get_stats(db_path: Optional[Path] = None) -> Dict[str, Any]:
         "cancelled": cancelled,
         "paid_families": paid_families,
         "total_donation": total_donation,
+        "total_donations": total_donation,
         "tickets_attached": tickets_attached,
         "ready_for_booking": ready_for_booking,
         "incomplete_profiles": incomplete_profiles,

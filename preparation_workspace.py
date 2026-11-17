@@ -125,6 +125,20 @@ class FastBookingDashboardView(tk.Frame):
         )
         btn_refresh.pack(side="right", padx=(8, 0))
 
+        btn_import = tk.Button(
+            btn_bar,
+            text="📥 Import Dataset",
+            font=("Segoe UI", 9, "bold"),
+            bg="#0D5C75",
+            fg="#FFFFFF",
+            bd=0,
+            padx=12,
+            pady=4,
+            cursor="hand2",
+            command=lambda: self.app.open_dataset_import_modal() if hasattr(self.app, "open_dataset_import_modal") else None,
+        )
+        btn_import.pack(side="right", padx=(8, 0))
+
         btn_launch = tk.Button(
             btn_bar,
             text="⚡ Open Manual Workspace",

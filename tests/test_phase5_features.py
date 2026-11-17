@@ -151,5 +151,5 @@ def test_first_run_configuration_persistence(test_db, tmp_path):
     assert u["display_name"] == "Wizard Admin"
 
 def test_application_version_consistency():
-    """Verify application version is consistent (v5.0.0, v6.0.0, or v7.0.0)."""
-    assert APP_VERSION in ("5.0.0", "6.0.0", "7.0.0")
+    """Verify application version is consistent (v5.0.0, v6.0.0, v7.0.0, or v7.1.0)."""
+    assert APP_VERSION in ("5.0.0", "6.0.0", "7.0.0", "7.1.0")

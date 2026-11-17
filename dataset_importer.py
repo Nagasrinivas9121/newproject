@@ -44,6 +44,7 @@ from config import (
     PRIORITY_LOW,
 )
 from database import get_connection, record_import_batch, generate_family_code
+from backup_manager import create_database_backup
 from validators import (
     clean_text,
     normalize_phone,
@@ -385,14 +386,31 @@ def validate_and_analyze_dataset(
 
         row_errors: List[Dict[str, Any]] = []
 
-        # 1. Family Name resolution
+        # 1. Family Name resolution & Family Reference Check
+        code = clean_text(row_data.get("family_code"))
         raw_fam_name = clean_text(row_data.get("family_name"))
         raw_pilgrim_name = clean_text(row_data.get("full_name"))
+        phone_raw = row_data.get("phone")
+
+        if code:
+            if code.lower() in db_by_code:
+                ref_fam = db_by_code[code.lower()]
+                if not raw_fam_name:
+                    raw_fam_name = ref_fam["family_name"]
+                if not phone_raw and ref_fam.get("phone"):
+                    phone_raw = ref_fam.get("phone")
+            elif not raw_fam_name:
+                row_errors.append({
+                    "row": row_num,
+                    "column": "family_code",
+                    "value": code,
+                    "error": f"Missing family reference: Family code '{code}' does not exist in database.",
+                })
 
         if not raw_fam_name and raw_pilgrim_name:
             raw_fam_name = f"{raw_pilgrim_name} Family"
 
-        if not raw_fam_name:
+        if not raw_fam_name and not (code and code.lower() not in db_by_code):
             row_errors.append({"row": row_num, "column": "family_name", "value": "", "error": "Family Name is required."})
 
         # 2. Pilgrim Name resolution
@@ -439,6 +457,16 @@ def validate_and_analyze_dataset(
         id_type = normalize_id_proof_type(row_data.get("id_proof_type"))
         last4, _ = validate_id_proof_last4(row_data.get("id_proof_last4"))
         b_status = normalize_booking_status(row_data.get("booking_status"))
+        
+        # Resolve Queue Status (Pending, In progress, Booked, Unavailable, Cancelled)
+        raw_b_status = clean_text(row_data.get("booking_status"))
+        queue_status = STATUS_PENDING
+        if raw_b_status:
+            for s_opt in (STATUS_PENDING, STATUS_IN_PROGRESS, STATUS_BOOKED, STATUS_UNAVAILABLE, STATUS_CANCELLED):
+                if raw_b_status.lower() == s_opt.lower():
+                    queue_status = s_opt
+                    break
+
         p_status = normalize_payment_tracking_status(row_data.get("payment_status"))
         b_type = clean_text(row_data.get("booking_type")) or BOOKING_TYPE_ADVANCE
         prio = clean_text(row_data.get("priority")) or PRIORITY_NORMAL
@@ -566,6 +594,7 @@ def validate_and_analyze_dataset(
                     "address": clean_text(row_data.get("address")),
                     "donation_amount": donation,
                     "booking_status": b_status,
+                    "queue_status": queue_status,
                     "payment_status": p_status,
                     "preferred_date": pref_date,
                     "booking_type": b_type,
@@ -614,6 +643,12 @@ def execute_dataset_import(
     updated_count = 0
     skipped_count = analysis.get("skipped_records_count", 0)
     failed_count = analysis.get("invalid_rows_count", 0)
+
+    # Create pre-import database backup before any database changes
+    try:
+        create_database_backup(db_path=db_path)
+    except Exception as e:
+        logger.warning(f"Pre-import database backup warning: {e}")
 
     try:
         with get_connection(db_path) as con:
@@ -669,7 +704,7 @@ def execute_dataset_import(
                         donation,
                         fam_info["booking_type"],
                         fam_info["preferred_date"],
-                        fam_info["booking_status"],
+                        fam_info.get("queue_status", STATUS_PENDING),
                         fam_info["payment_status"],
                         fam_info["priority"],
                         fam_info["notes"],

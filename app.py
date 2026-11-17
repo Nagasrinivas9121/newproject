@@ -101,7 +101,7 @@ from preparation_workspace import (
     BookingReadinessInspectorDialog,
     BookingHistoryFrame,
 )
-from data_import_view import DataImportView
+from data_import_view import DataImportView, DatasetImportDialog
 from data_cleanup import DataCleanupDialog, scan_for_mock_data
 
 # Legacy compatibility exports
@@ -509,6 +509,34 @@ class App(tk.Tk):
             command=self.open_assisted_booking,
         ).pack(side="right")
 
+        ttk.Button(
+            h_right,
+            text="📑 Reports",
+            command=lambda: self.on_nav_click("reports"),
+        ).pack(side="right", padx=(0, 6))
+
+        ttk.Button(
+            h_right,
+            text="📤 Export",
+            command=self.export_menu,
+        ).pack(side="right", padx=(0, 6))
+
+        self.btn_header_import = tk.Button(
+            h_right,
+            text="📥 Import Dataset",
+            font=("Segoe UI", 9, "bold"),
+            bg="#0D5C75",
+            fg="#FFFFFF",
+            activebackground="#0A4B5F",
+            activeforeground="#FFFFFF",
+            relief="flat",
+            padx=12,
+            pady=4,
+            cursor="hand2",
+            command=self.open_dataset_import_modal,
+        )
+        self.btn_header_import.pack(side="right", padx=(0, 8))
+
         # License Expiry & Notice Banner
         self.license_banner = tk.Frame(parent, bg="#FEF3C7", padx=16, pady=6)
         self.lbl_lic_banner = tk.Label(self.license_banner, text="", font=("Segoe UI", 9, "bold"), fg="#92400E", bg="#FEF3C7")
@@ -527,8 +555,8 @@ class App(tk.Tk):
         )
         self.btn_lic_banner.pack(side="right")
 
-        # 2. Six Required Dashboard Summary Cards:
-        # Total Families, Total Pilgrims, Pending Families, In Progress, Booked, Cancelled
+        # 2. Required Dashboard Summary Cards:
+        # Total Families, Total Devotees, Pending Queue, In Progress, Booked, Total Donations, Cancelled
         self.stats_frame = ttk.Frame(parent, padding=(20, 6, 20, 8))
         self.stats_frame.pack(fill="x")
         stats_frame = self.stats_frame
@@ -536,10 +564,11 @@ class App(tk.Tk):
         self.cards = {}
         metric_configs = [
             ("total_families", "TOTAL FAMILIES", "0", "#1B365D"),
-            ("total_pilgrims", "TOTAL PILGRIMS", "0", "#4338CA"),
-            ("pending_families", "PENDING FAMILIES", "0", "#B45309"),
+            ("total_pilgrims", "TOTAL DEVOTEES", "0", "#4338CA"),
+            ("pending_families", "PENDING QUEUE", "0", "#B45309"),
             ("in_progress", "IN PROGRESS", "0", "#0369A1"),
             ("booked", "BOOKED", "0", "#15803D"),
+            ("total_donations", "TOTAL DONATIONS", "₹0", "#0D5C75"),
             ("cancelled", "CANCELLED", "0", "#DC2626"),
         ]
 
@@ -582,7 +611,7 @@ class App(tk.Tk):
 
         tk.Button(
             btn_empty_box,
-            text="📥 Import Client Dataset (.csv / .xlsx)",
+            text="📥 Import Dataset (.csv / .xlsx)",
             font=("Segoe UI", 9, "bold"),
             bg="#0D5C75",
             fg="#FFFFFF",
@@ -590,7 +619,7 @@ class App(tk.Tk):
             padx=14,
             pady=6,
             cursor="hand2",
-            command=lambda: self.on_nav_click("data_import"),
+            command=self.open_dataset_import_modal,
         ).pack(side="left", padx=(0, 10))
 
         tk.Button(
@@ -622,6 +651,7 @@ class App(tk.Tk):
         ttk.Button(toolbar, text="✏️ Edit Family", command=self.edit_selected_family).pack(side="left", padx=(0, 6))
         ttk.Button(toolbar, text="🔄 Update Status", command=self.update_status).pack(side="left", padx=(0, 6))
         ttk.Button(toolbar, text="📄 Ticket PDF / Slip", command=self.manage_ticket_pdf).pack(side="left", padx=(0, 6))
+        ttk.Button(toolbar, text="📥 Import Dataset", command=self.open_dataset_import_modal).pack(side="left", padx=(0, 6))
         ttk.Button(toolbar, text="📥 Import Excel/CSV", command=self.import_file).pack(side="left", padx=(0, 6))
         ttk.Button(toolbar, text="📤 Export", command=self.export_menu).pack(side="left", padx=(0, 6))
         ttk.Button(toolbar, text="🗑️ Delete", command=self.delete_selected_family).pack(side="left", padx=(0, 6))
@@ -1372,12 +1402,20 @@ class App(tk.Tk):
     def refresh(self):
         """Update dashboard summary cards, license notification banner, and table data."""
         stats = get_stats()
-        self.cards["total_families"].config(text=str(stats["total_families"]))
-        self.cards["total_pilgrims"].config(text=str(stats["total_pilgrims"]))
-        self.cards["pending_families"].config(text=str(stats["pending_families"]))
-        self.cards["in_progress"].config(text=str(stats["in_progress"]))
-        self.cards["booked"].config(text=str(stats["booked"]))
-        self.cards["cancelled"].config(text=str(stats["cancelled"]))
+        if "total_families" in self.cards:
+            self.cards["total_families"].config(text=str(stats["total_families"]))
+        if "total_pilgrims" in self.cards:
+            self.cards["total_pilgrims"].config(text=str(stats["total_pilgrims"]))
+        if "pending_families" in self.cards:
+            self.cards["pending_families"].config(text=str(stats["pending_families"]))
+        if "in_progress" in self.cards:
+            self.cards["in_progress"].config(text=str(stats["in_progress"]))
+        if "booked" in self.cards:
+            self.cards["booked"].config(text=str(stats["booked"]))
+        if "total_donations" in self.cards:
+            self.cards["total_donations"].config(text=f"₹{stats.get('total_donation', 0):,}")
+        if "cancelled" in self.cards:
+            self.cards["cancelled"].config(text=str(stats["cancelled"]))
 
         # License Expiry & Warning Notification Check
         try:
@@ -1591,12 +1629,17 @@ class App(tk.Tk):
             self.tree.selection_set(str(fid))
             self.tree.see(str(fid))
 
+    def open_dataset_import_modal(self, file_path=None):
+        """Open the dedicated modern Dataset Import modal."""
+        DatasetImportDialog(self, on_success_callback=self.refresh, file_path=file_path)
+
     def import_file(self):
+        """Select dataset file and launch the dedicated Dataset Import modal."""
         path = filedialog.askopenfilename(
             parent=self,
-            title="Select Devotees File to Preview (Excel or CSV)",
+            title="Select Devotees Dataset to Preview (.csv or .xlsx)",
             filetypes=[
-                ("Excel & CSV Files", "*.xlsx *.xls *.csv"),
+                ("Supported Datasets (*.csv;*.xlsx)", "*.csv;*.xlsx"),
                 ("Excel Workbooks (*.xlsx)", "*.xlsx"),
                 ("CSV Files (*.csv)", "*.csv"),
                 ("All Files", "*.*"),
@@ -1604,8 +1647,8 @@ class App(tk.Tk):
         )
         if not path:
             return
-        # Open visual ImportPreviewDialog with duplicate detection
-        ImportPreviewDialog(self, path, on_success_callback=self.refresh)
+        # Open visual DatasetImportDialog with full preview, mapping & validation
+        DatasetImportDialog(self, on_success_callback=self.refresh, file_path=path)
 
     def export_menu(self):
         win = tk.Toplevel(self)

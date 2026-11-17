@@ -50,6 +50,7 @@ from data_cleanup import (
     cleanup_mock_data,
     DataCleanupDialog,
 )
+from backup_manager import create_database_backup
 from logger import get_logger
 
 logger = get_logger("data_import_view")
@@ -371,21 +372,61 @@ class DataImportView(tk.Frame):
 
             self.mapping_combos[h] = cb
 
-    def _render_preview_table(self, headers: List[str], sample_rows: List[Dict[str, Any]]):
+    def _render_preview_table(self, headers: List[str], sample_rows: List[Dict[str, Any]], mapping: Optional[Dict[str, Optional[str]]] = None):
         for item in self.tree_preview.get_children():
             self.tree_preview.delete(item)
 
-        cols = ["_row_num"] + headers
-        self.tree_preview["columns"] = cols
-        self.tree_preview.heading("_row_num", text="Row #")
-        self.tree_preview.column("_row_num", width=50, anchor="center")
+        mapping = mapping or self.get_current_mapping()
+        target_to_hdr: Dict[str, str] = {}
+        for h, t in mapping.items():
+            if t and t not in target_to_hdr:
+                target_to_hdr[t] = h
 
-        for h in headers:
-            self.tree_preview.heading(h, text=h)
-            self.tree_preview.column(h, width=120)
+        core_cols = [
+            ("_row_num", "Row #", 55, "center"),
+            ("fam_id", "Family ID", 110, "center"),
+            ("fam_name", "Family Name", 140, "w"),
+            ("pilgrim_name", "Pilgrim Name", 140, "w"),
+            ("age", "Age", 55, "center"),
+            ("gender", "Gender", 65, "center"),
+            ("mobile", "Mobile Number", 110, "center"),
+        ]
 
-        for r in sample_rows:
-            vals = [r.get("_row_num", "")] + [str(r.get(h, "")) for h in headers]
+        mapped_hdrs = set(target_to_hdr.values())
+        other_hdrs = [h for h in headers if h not in mapped_hdrs]
+
+        all_col_ids = [c[0] for c in core_cols] + [f"other_{i}" for i in range(len(other_hdrs))]
+        self.tree_preview["columns"] = all_col_ids
+
+        for cid, title, w, align in core_cols:
+            self.tree_preview.heading(cid, text=title)
+            self.tree_preview.column(cid, width=w, anchor=align)
+
+        for i, h in enumerate(other_hdrs):
+            cid = f"other_{i}"
+            self.tree_preview.heading(cid, text=h)
+            self.tree_preview.column(cid, width=120, anchor="w")
+
+        f_id_hdr = target_to_hdr.get("family_code")
+        f_name_hdr = target_to_hdr.get("family_name")
+        p_name_hdr = target_to_hdr.get("full_name")
+        age_hdr = target_to_hdr.get("age")
+        gender_hdr = target_to_hdr.get("gender")
+        phone_hdr = target_to_hdr.get("phone")
+
+        for idx, r in enumerate(sample_rows):
+            row_num = r.get("_row_num", idx + 1)
+            fam_id = str(r.get(f_id_hdr, "")) if f_id_hdr else ""
+            fam_name = str(r.get(f_name_hdr, "")) if f_name_hdr else ""
+            p_name = str(r.get(p_name_hdr, "")) if p_name_hdr else ""
+            age = str(r.get(age_hdr, "")) if age_hdr else ""
+            gender = str(r.get(gender_hdr, "")) if gender_hdr else ""
+            mobile = str(r.get(phone_hdr, "")) if phone_hdr else ""
+
+            if not fam_name and p_name:
+                fam_name = f"{p_name} Family"
+
+            vals = [row_num, fam_id, fam_name, p_name, age, gender, mobile] + [str(r.get(h, "")) for h in other_hdrs]
             self.tree_preview.insert("", "end", values=vals)
 
     def get_current_mapping(self) -> Dict[str, Optional[str]]:
@@ -747,3 +788,1016 @@ class DataImportView(tk.Frame):
                     a["created_at"],
                 ),
             )
+
+
+# =============================================================================
+# DEDICATED DATASET IMPORT MODAL DIALOG (Phase 10 / Dashboard Feature)
+# =============================================================================
+
+class DatasetImportDialog(tk.Toplevel):
+    """
+    Dedicated Modern Dataset Import Dialog for the SRIVANI Dashboard.
+
+    Requirements:
+    1. Upload CSV button (.csv)
+    2. Upload Excel button (.xlsx)
+    3. Drag and drop file area (visual drop zone with click-to-browse & windnd support)
+    4. Supported formats indicator (.csv and .xlsx)
+    5. Selected filename and file size display
+    6. Preview Dataset button and Cancel button
+    7. Data Preview table with Row #, Family ID, Family name, Pilgrim name, Age, Gender, Mobile number,
+       plus other detected columns, with horizontal & vertical scrolling
+    8. Column mapping: Map uploaded columns to database fields, detect unmatched columns,
+       and prompt confirmation for ambiguous mappings
+    9. Validation engine: Missing required values, invalid phone, invalid age, duplicates,
+       missing family references, invalid data formats, displaying row-specific errors and error report export
+    10. Import options: Skip duplicate records, Update existing records after confirmation, Cancel import
+        (with existing family ID reuse for multiple pilgrims)
+    11. Import summary before committing with admin confirmation
+    12. Database integration: Atomic transaction with rollback, batch ID, pre-import backup, no mock data
+    13. Automatic dashboard refresh of all 6 statistics
+    14. 100% offline local compliance
+    """
+
+    def __init__(
+        self,
+        parent,
+        on_success_callback=None,
+        file_path: Optional[str | Path] = None,
+        db_path: Optional[Path] = None,
+    ):
+        super().__init__(parent)
+        self.app = parent
+        self.on_success = on_success_callback
+        self.db_path = db_path or DB_PATH
+
+        self.current_file_path: Optional[Path] = None
+        self.raw_headers: List[str] = []
+        self.raw_rows: List[Dict[str, Any]] = []
+        self.file_size: int = 0
+        self.file_format: str = ""
+        self.mapping_combos: Dict[str, ttk.Combobox] = {}
+        self.mapping_badges: Dict[str, tk.Label] = {}
+        self.analysis_result: Optional[Dict[str, Any]] = None
+
+        self.title("📥 Import Dataset — SRIVANI Booking Manager")
+        self.geometry("1060x740")
+        self.minsize(920, 600)
+
+        # Center on parent or screen
+        try:
+            self.update_idletasks()
+            pw = parent.winfo_width()
+            ph = parent.winfo_height()
+            px = parent.winfo_rootx()
+            py = parent.winfo_rooty()
+            w = 1060
+            h = 740
+            x = max(0, px + (pw - w) // 2)
+            y = max(0, py + (ph - h) // 2)
+            self.geometry(f"{w}x{h}+{x}+{y}")
+        except Exception:
+            pass
+
+        self.transient(parent)
+        self.grab_set()
+
+        self._build_ui()
+
+        if file_path:
+            self.load_file(Path(file_path))
+
+    def _build_ui(self):
+        # Main background container
+        self.configure(bg="#F1F5F9")
+        main_box = tk.Frame(self, bg="#F1F5F9", padx=16, pady=12)
+        main_box.pack(fill="both", expand=True)
+
+        # ---------------------------------------------------------------------
+        # 1. Top Header Banner
+        # ---------------------------------------------------------------------
+        header_frame = tk.Frame(main_box, bg="#FFFFFF", padx=18, pady=12, bd=1, relief="solid")
+        header_frame.pack(fill="x", pady=(0, 10))
+
+        h_left = tk.Frame(header_frame, bg="#FFFFFF")
+        h_left.pack(side="left")
+
+        lbl_title = tk.Label(
+            h_left,
+            text="📥 IMPORT DATASET — DEVOTEE INGESTION WIZARD",
+            font=("Segoe UI", 14, "bold"),
+            fg="#0F172A",
+            bg="#FFFFFF",
+        )
+        lbl_title.pack(anchor="w")
+
+        lbl_sub = tk.Label(
+            h_left,
+            text="Upload CSV or Excel spreadsheets, preview data, map columns, validate records, and commit to local database.",
+            font=("Segoe UI", 9),
+            fg="#64748B",
+            bg="#FFFFFF",
+        )
+        lbl_sub.pack(anchor="w", pady=(2, 0))
+
+        btn_close_top = tk.Button(
+            header_frame,
+            text="✖",
+            font=("Segoe UI", 11, "bold"),
+            bg="#FFFFFF",
+            fg="#64748B",
+            activebackground="#FEE2E2",
+            activeforeground="#DC2626",
+            bd=0,
+            cursor="hand2",
+            command=self.destroy,
+        )
+        btn_close_top.pack(side="right")
+
+        # ---------------------------------------------------------------------
+        # 2. File Selection & Drop Zone Card
+        # ---------------------------------------------------------------------
+        file_box = tk.LabelFrame(
+            main_box,
+            text=" 1. File Selection & Drop Zone ",
+            font=("Segoe UI", 9, "bold"),
+            bg="#FFFFFF",
+            padx=14,
+            pady=8,
+        )
+        file_box.pack(fill="x", pady=(0, 10))
+
+        # Top Button Bar
+        btn_row = tk.Frame(file_box, bg="#FFFFFF")
+        btn_row.pack(fill="x", pady=(0, 8))
+
+        btn_csv = tk.Button(
+            btn_row,
+            text="📂 Upload CSV (.csv)",
+            font=("Segoe UI", 9, "bold"),
+            bg="#0D5C75",
+            fg="#FFFFFF",
+            activebackground="#0A4B5F",
+            activeforeground="#FFFFFF",
+            relief="flat",
+            padx=14,
+            pady=5,
+            cursor="hand2",
+            command=self.browse_csv,
+        )
+        btn_csv.pack(side="left", padx=(0, 8))
+
+        btn_excel = tk.Button(
+            btn_row,
+            text="📊 Upload Excel (.xlsx)",
+            font=("Segoe UI", 9, "bold"),
+            bg="#0F766E",
+            fg="#FFFFFF",
+            activebackground="#115E59",
+            activeforeground="#FFFFFF",
+            relief="flat",
+            padx=14,
+            pady=5,
+            cursor="hand2",
+            command=self.browse_excel,
+        )
+        btn_excel.pack(side="left", padx=(0, 8))
+
+        btn_preview = tk.Button(
+            btn_row,
+            text="👁️ Preview Dataset",
+            font=("Segoe UI", 9),
+            bg="#1E293B",
+            fg="#FFFFFF",
+            activebackground="#334155",
+            activeforeground="#FFFFFF",
+            relief="flat",
+            padx=12,
+            pady=5,
+            cursor="hand2",
+            command=self.preview_dataset_clicked,
+        )
+        btn_preview.pack(side="left", padx=(0, 8))
+
+        btn_cancel_file = tk.Button(
+            btn_row,
+            text="❌ Cancel",
+            font=("Segoe UI", 9),
+            bg="#F1F5F9",
+            fg="#475569",
+            activebackground="#E2E8F0",
+            relief="flat",
+            padx=12,
+            pady=5,
+            cursor="hand2",
+            command=self.destroy,
+        )
+        btn_cancel_file.pack(side="right")
+
+        # Visual Drag & Drop Area / Drop Zone
+        self.drop_zone = tk.Frame(
+            file_box,
+            bg="#F8FAFC",
+            highlightbackground="#94A3B8",
+            highlightthickness=2,
+            bd=0,
+            padx=16,
+            pady=8,
+            cursor="hand2",
+        )
+        self.drop_zone.pack(fill="x", pady=(0, 8))
+
+        lbl_drop_main = tk.Label(
+            self.drop_zone,
+            text="📥 Drag & Drop your .csv or .xlsx file here, or click to browse",
+            font=("Segoe UI", 10, "bold"),
+            fg="#1E293B",
+            bg="#F8FAFC",
+            cursor="hand2",
+        )
+        lbl_drop_main.pack(anchor="center")
+
+        lbl_drop_sub = tk.Label(
+            self.drop_zone,
+            text="Supported formats: .csv and .xlsx (Excel Workbooks) • Up to 50MB per file",
+            font=("Segoe UI", 8),
+            fg="#64748B",
+            bg="#F8FAFC",
+            cursor="hand2",
+        )
+        lbl_drop_sub.pack(anchor="center", pady=(2, 0))
+
+        # Click on drop zone opens file chooser
+        self.drop_zone.bind("<Button-1>", self.browse_all)
+        lbl_drop_main.bind("<Button-1>", self.browse_all)
+        lbl_drop_sub.bind("<Button-1>", self.browse_all)
+
+        # Hook windnd if present in environment
+        try:
+            import windnd
+            windnd.hook_dropfiles(self.drop_zone, func=self._on_windnd_drop)
+        except Exception:
+            pass
+
+        # Selected File Metadata Bar
+        info_row = tk.Frame(file_box, bg="#FFFFFF")
+        info_row.pack(fill="x")
+
+        self.lbl_selected_file = tk.Label(
+            info_row,
+            text="Selected File: None",
+            font=("Segoe UI", 9, "bold"),
+            fg="#64748B",
+            bg="#FFFFFF",
+        )
+        self.lbl_selected_file.pack(side="left", padx=(0, 16))
+
+        self.lbl_file_size = tk.Label(
+            info_row,
+            text="File Size: —",
+            font=("Segoe UI", 9),
+            fg="#64748B",
+            bg="#FFFFFF",
+        )
+        self.lbl_file_size.pack(side="left", padx=(0, 16))
+
+        self.lbl_file_format = tk.Label(
+            info_row,
+            text="Format: —",
+            font=("Segoe UI", 9),
+            fg="#64748B",
+            bg="#FFFFFF",
+        )
+        self.lbl_file_format.pack(side="left")
+
+        # ---------------------------------------------------------------------
+        # 3. Main Workspace Notebook (Preview, Mapping, Validation, Summary)
+        # ---------------------------------------------------------------------
+        self.notebook = ttk.Notebook(main_box)
+        self.notebook.pack(fill="both", expand=True, pady=(0, 8))
+
+        # Tab 1: Preview & Column Mapping
+        self.tab_preview_map = ttk.Frame(self.notebook, padding=8)
+        self.notebook.add(self.tab_preview_map, text="  👁️ Data Preview & Column Mapping  ")
+        self._build_preview_map_tab(self.tab_preview_map)
+
+        # Tab 2: Validation & Row Errors
+        self.tab_validation = ttk.Frame(self.notebook, padding=8)
+        self.notebook.add(self.tab_validation, text="  🔍 Validation & Row-Specific Errors  ")
+        self._build_validation_tab(self.tab_validation)
+
+        # Tab 3: Summary & Options
+        self.tab_summary = ttk.Frame(self.notebook, padding=8)
+        self.notebook.add(self.tab_summary, text="  📋 Import Summary & Options  ")
+        self._build_summary_tab(self.tab_summary)
+
+        # ---------------------------------------------------------------------
+        # 4. Sticky Bottom Action Footer
+        # ---------------------------------------------------------------------
+        footer_frame = tk.Frame(main_box, bg="#FFFFFF", padx=14, pady=10, bd=1, relief="solid")
+        footer_frame.pack(fill="x")
+
+        self.lbl_bottom_summary = tk.Label(
+            footer_frame,
+            text="Please select a .csv or .xlsx file to preview and validate records.",
+            font=("Segoe UI", 9, "bold"),
+            fg="#1E293B",
+            bg="#FFFFFF",
+        )
+        self.lbl_bottom_summary.pack(side="left")
+
+        btn_box = tk.Frame(footer_frame, bg="#FFFFFF")
+        btn_box.pack(side="right")
+
+        ttk.Button(btn_box, text="Cancel", command=self.destroy).pack(side="left", padx=(0, 8))
+
+        self.btn_validate_bottom = ttk.Button(
+            btn_box,
+            text="🔍 Re-Validate",
+            command=self.validate_dataset,
+        )
+        self.btn_validate_bottom.pack(side="left", padx=(0, 8))
+
+        self.btn_commit = tk.Button(
+            btn_box,
+            text="🚀 Import Dataset",
+            font=("Segoe UI", 9, "bold"),
+            bg="#15803D",
+            fg="#FFFFFF",
+            activebackground="#166534",
+            activeforeground="#FFFFFF",
+            relief="flat",
+            padx=16,
+            pady=5,
+            cursor="hand2",
+            state="disabled",
+            command=self.commit_import,
+        )
+        self.btn_commit.pack(side="left")
+
+    # -------------------------------------------------------------------------
+    # TAB 1: PREVIEW & COLUMN MAPPING BUILDER
+    # -------------------------------------------------------------------------
+    def _build_preview_map_tab(self, parent):
+        # Split into upper Mapping area and lower Preview table
+        # 1. Upper Mapping Container
+        map_outer = tk.LabelFrame(
+            parent,
+            text=" 2. Column Mapping (Map dataset columns to database fields) ",
+            font=("Segoe UI", 9, "bold"),
+            bg="#FFFFFF",
+            padx=10,
+            pady=6,
+        )
+        map_outer.pack(fill="x", pady=(0, 8))
+
+        tk.Label(
+            map_outer,
+            text="Columns auto-detected based on aliases. Unmatched columns are highlighted below:",
+            font=("Segoe UI", 8),
+            fg="#64748B",
+            bg="#FFFFFF",
+        ).pack(anchor="w", pady=(0, 4))
+
+        # Scrollable mapping container
+        map_canvas_frame = tk.Frame(map_outer, bg="#FFFFFF", height=130)
+        map_canvas_frame.pack(fill="x", expand=False)
+
+        self.canvas_map = tk.Canvas(map_canvas_frame, bg="#FFFFFF", highlightthickness=0, height=130)
+        self.scrollbar_map = ttk.Scrollbar(map_canvas_frame, orient="vertical", command=self.canvas_map.yview)
+        self.frame_mapping_inner = tk.Frame(self.canvas_map, bg="#FFFFFF")
+
+        self.frame_mapping_inner.bind(
+            "<Configure>",
+            lambda e: self.canvas_map.configure(scrollregion=self.canvas_map.bbox("all")),
+        )
+        self.canvas_map.create_window((0, 0), window=self.frame_mapping_inner, anchor="nw")
+        self.canvas_map.configure(yscrollcommand=self.scrollbar_map.set)
+
+        self.canvas_map.pack(side="left", fill="both", expand=True)
+        self.scrollbar_map.pack(side="right", fill="y")
+
+        # 2. Lower Preview Table Container
+        preview_outer = tk.LabelFrame(
+            parent,
+            text=" 3. Data Preview (First 50 Rows) ",
+            font=("Segoe UI", 9, "bold"),
+            bg="#FFFFFF",
+            padx=10,
+            pady=6,
+        )
+        preview_outer.pack(fill="both", expand=True)
+
+        tbl_box = ttk.Frame(preview_outer)
+        tbl_box.pack(fill="both", expand=True)
+
+        self.tree_preview = ttk.Treeview(tbl_box, show="headings", height=9)
+        self.tree_scroll_y = ttk.Scrollbar(tbl_box, orient="vertical", command=self.tree_preview.yview)
+        self.tree_scroll_x = ttk.Scrollbar(tbl_box, orient="horizontal", command=self.tree_preview.xview)
+        self.tree_preview.configure(yscrollcommand=self.tree_scroll_y.set, xscrollcommand=self.tree_scroll_x.set)
+
+        self.tree_preview.grid(row=0, column=0, sticky="nsew")
+        self.tree_scroll_y.grid(row=0, column=1, sticky="ns")
+        self.tree_scroll_x.grid(row=1, column=0, sticky="ew")
+
+        tbl_box.rowconfigure(0, weight=1)
+        tbl_box.columnconfigure(0, weight=1)
+
+    # -------------------------------------------------------------------------
+    # TAB 2: VALIDATION & ROW-SPECIFIC ERRORS BUILDER
+    # -------------------------------------------------------------------------
+    def _build_validation_tab(self, parent):
+        top_val = tk.Frame(parent, bg="#FFFFFF", padx=10, pady=8, bd=1, relief="solid")
+        top_val.pack(fill="x", pady=(0, 8))
+
+        self.lbl_val_status = tk.Label(
+            top_val,
+            text="No dataset validated yet. Please upload a file.",
+            font=("Segoe UI", 9, "bold"),
+            fg="#475569",
+            bg="#FFFFFF",
+        )
+        self.lbl_val_status.pack(side="left")
+
+        self.btn_export_errors = ttk.Button(
+            top_val,
+            text="📥 Export Error Report (.csv)",
+            command=self.download_error_report,
+            state="disabled",
+        )
+        self.btn_export_errors.pack(side="right")
+
+        # Row-specific error table
+        err_box = ttk.Frame(parent)
+        err_box.pack(fill="both", expand=True)
+
+        err_cols = ("row", "column", "value", "error", "severity")
+        self.tree_errors = ttk.Treeview(err_box, columns=err_cols, show="headings", height=12)
+        self.tree_errors.heading("row", text="Row #")
+        self.tree_errors.heading("column", text="Field / Column")
+        self.tree_errors.heading("value", text="Problematic Value")
+        self.tree_errors.heading("error", text="Error Description")
+        self.tree_errors.heading("severity", text="Severity")
+
+        self.tree_errors.column("row", width=60, anchor="center")
+        self.tree_errors.column("column", width=140)
+        self.tree_errors.column("value", width=140)
+        self.tree_errors.column("error", width=380)
+        self.tree_errors.column("severity", width=90, anchor="center")
+
+        err_sy = ttk.Scrollbar(err_box, orient="vertical", command=self.tree_errors.yview)
+        err_sx = ttk.Scrollbar(err_box, orient="horizontal", command=self.tree_errors.xview)
+        self.tree_errors.configure(yscrollcommand=err_sy.set, xscrollcommand=err_sx.set)
+
+        self.tree_errors.grid(row=0, column=0, sticky="nsew")
+        err_sy.grid(row=0, column=1, sticky="ns")
+        err_sx.grid(row=1, column=0, sticky="ew")
+
+        err_box.rowconfigure(0, weight=1)
+        err_box.columnconfigure(0, weight=1)
+
+    # -------------------------------------------------------------------------
+    # TAB 3: IMPORT SUMMARY & DUPLICATE OPTIONS BUILDER
+    # -------------------------------------------------------------------------
+    def _build_summary_tab(self, parent):
+        # Summary Counters Box
+        sum_box = tk.LabelFrame(parent, text=" Pre-Commit Import Summary ", font=("Segoe UI", 10, "bold"), bg="#FFFFFF", padx=16, pady=12)
+        sum_box.pack(fill="x", pady=(0, 10))
+
+        self.badge_sum_labels = {}
+        metric_items = [
+            ("tot", "Total Rows in File", "0", "#1B365D"),
+            ("valid", "Valid Records", "0", "#15803D"),
+            ("invalid", "Invalid Records", "0", "#DC2626"),
+            ("new_f", "New Families", "0", "#0284C7"),
+            ("new_p", "New Pilgrims", "0", "#4338CA"),
+            ("dup", "Duplicate Records", "0", "#D97706"),
+            ("skip", "Records to Skip", "0", "#64748B"),
+        ]
+
+        card_row = tk.Frame(sum_box, bg="#FFFFFF")
+        card_row.pack(fill="x", pady=(0, 8))
+
+        for idx, (key, title, d_val, color) in enumerate(metric_items):
+            c_frame = tk.Frame(card_row, bg="#F8FAFC", highlightbackground="#CBD5E1", highlightthickness=1, padx=8, pady=6)
+            c_frame.pack(side="left", expand=True, fill="x", padx=(0 if idx == 0 else 4, 0))
+            tk.Label(c_frame, text=title, font=("Segoe UI", 7, "bold"), fg="#64748B", bg="#F8FAFC").pack(anchor="w")
+            lbl_v = tk.Label(c_frame, text=d_val, font=("Segoe UI", 13, "bold"), fg=color, bg="#F8FAFC")
+            lbl_v.pack(anchor="w")
+            self.badge_sum_labels[key] = lbl_v
+
+        # Duplicate Handling Policy Box
+        dup_frame = tk.LabelFrame(parent, text=" Duplicate Record Handling Policy ", font=("Segoe UI", 10, "bold"), bg="#FFFFFF", padx=16, pady=12)
+        dup_frame.pack(fill="x", pady=(0, 10))
+
+        self.dup_var = tk.StringVar(value=DUP_POLICY_SKIP)
+
+        ttk.Radiobutton(
+            dup_frame,
+            text="🔘 Skip duplicate records (Preserve existing database records; attach new pilgrims to existing families)",
+            variable=self.dup_var,
+            value=DUP_POLICY_SKIP,
+            command=self.validate_dataset,
+        ).pack(anchor="w", pady=3)
+
+        ttk.Radiobutton(
+            dup_frame,
+            text="🔄 Update existing records (Update contact, address, or devotee information after confirmation)",
+            variable=self.dup_var,
+            value=DUP_POLICY_UPDATE,
+            command=self.validate_dataset,
+        ).pack(anchor="w", pady=3)
+
+        ttk.Radiobutton(
+            dup_frame,
+            text="⛔ Cancel import if duplicate found (Strict zero-tolerance policy; aborts import)",
+            variable=self.dup_var,
+            value=DUP_POLICY_CANCEL,
+            command=self.validate_dataset,
+        ).pack(anchor="w", pady=3)
+
+        # Pre-import Database Backup Notice
+        backup_box = tk.Frame(parent, bg="#EFF6FF", highlightbackground="#93C5FD", highlightthickness=1, padx=14, pady=10)
+        backup_box.pack(fill="x")
+
+        tk.Label(
+            backup_box,
+            text="🛡️ Automatic Pre-Import Backup Protection",
+            font=("Segoe UI", 9, "bold"),
+            fg="#1E40AF",
+            bg="#EFF6FF",
+        ).pack(anchor="w")
+
+        tk.Label(
+            backup_box,
+            text="An automated SQLite snapshot will be created in your backups directory before committing any records.\nAll insertions and updates run inside an atomic transaction with automatic rollback on error.",
+            font=("Segoe UI", 8),
+            fg="#3B82F6",
+            bg="#EFF6FF",
+            justify="left",
+        ).pack(anchor="w", pady=(2, 0))
+
+    # -------------------------------------------------------------------------
+    # FILE BROWSING & LOADING
+    # -------------------------------------------------------------------------
+    def browse_csv(self):
+        path = filedialog.askopenfilename(
+            parent=self,
+            title="Select CSV Dataset to Import",
+            filetypes=[("CSV Files (*.csv)", "*.csv"), ("All Files", "*.*")],
+        )
+        if path:
+            self.load_file(Path(path))
+
+    def browse_excel(self):
+        path = filedialog.askopenfilename(
+            parent=self,
+            title="Select Excel Dataset to Import",
+            filetypes=[("Excel Workbooks (*.xlsx)", "*.xlsx"), ("All Files", "*.*")],
+        )
+        if path:
+            self.load_file(Path(path))
+
+    def browse_all(self, event=None):
+        path = filedialog.askopenfilename(
+            parent=self,
+            title="Select Dataset File to Import (.csv or .xlsx)",
+            filetypes=[
+                ("Supported Datasets (*.csv;*.xlsx)", "*.csv;*.xlsx"),
+                ("CSV Files (*.csv)", "*.csv"),
+                ("Excel Files (*.xlsx)", "*.xlsx"),
+                ("All Files", "*.*"),
+            ],
+        )
+        if path:
+            self.load_file(Path(path))
+
+    def _on_windnd_drop(self, files):
+        if files:
+            first_file = files[0]
+            if isinstance(first_file, bytes):
+                first_file = first_file.decode("utf-8", errors="replace")
+            p = Path(first_file)
+            if p.suffix.lower() in [".csv", ".xlsx", ".xls", ".xlsm"]:
+                self.load_file(p)
+            else:
+                messagebox.showerror("Unsupported File", f"File '{p.name}' is not a supported .csv or .xlsx file.", parent=self)
+
+    def preview_dataset_clicked(self):
+        if not self.raw_rows:
+            messagebox.showinfo("No File Selected", "Please upload a CSV or Excel dataset file first.", parent=self)
+            return
+        self.notebook.select(self.tab_preview_map)
+
+    def load_file(self, p: Path):
+        try:
+            headers, rows, size, fmt = read_dataset_file(p)
+            if not headers or not rows:
+                messagebox.showerror("Empty File", f"The selected file '{p.name}' contains no headers or data rows.", parent=self)
+                return
+
+            self.current_file_path = p
+            self.raw_headers = headers
+            self.raw_rows = rows
+            self.file_size = size
+            self.file_format = fmt
+
+            size_str = f"{size / 1024:.1f} KB" if size < 1024 * 1024 else f"{size / (1024*1024):.2f} MB"
+            self.lbl_selected_file.config(text=f"Selected File: {p.name}", fg="#0F172A")
+            self.lbl_file_size.config(text=f"File Size: {size_str} ({len(rows)} rows)", fg="#0F172A")
+            self.lbl_file_format.config(text=f"Format: {fmt}", fg="#0F172A")
+
+            # Detect initial mapping
+            mapping = detect_column_mapping(headers)
+            self._render_mapping_ui(headers, mapping)
+            self._render_preview_table(headers, rows[:50], mapping)
+
+            # Auto-run validation
+            self.validate_dataset()
+
+        except Exception as e:
+            logger.error(f"Failed to read dataset file '{p}': {e}")
+            messagebox.showerror("File Error", f"Unable to read dataset file:\n{e}", parent=self)
+
+    # -------------------------------------------------------------------------
+    # COLUMN MAPPING RENDERING & HANDLING
+    # -------------------------------------------------------------------------
+    def _render_mapping_ui(self, headers: List[str], initial_mapping: Dict[str, Optional[str]]):
+        for widget in self.frame_mapping_inner.winfo_children():
+            widget.destroy()
+        self.mapping_combos.clear()
+        self.mapping_badges.clear()
+
+        options = ["-- Unmatched / Skip --"] + [f"{target} ({label})" for target, label, _ in ALL_TARGET_FIELDS]
+
+        # Arrange in 2-column grid inside inner frame
+        for idx, h in enumerate(headers):
+            grid_row = idx // 2
+            grid_col = idx % 2
+
+            cell_frame = tk.Frame(self.frame_mapping_inner, bg="#FFFFFF", padx=6, pady=3)
+            cell_frame.grid(row=grid_row, column=grid_col, sticky="ew", padx=4, pady=2)
+            self.frame_mapping_inner.columnconfigure(grid_col, weight=1)
+
+            lbl_h = tk.Label(
+                cell_frame,
+                text=h[:16] + ("..." if len(h) > 16 else ""),
+                font=("Segoe UI", 8, "bold"),
+                fg="#1E293B",
+                bg="#FFFFFF",
+                width=16,
+                anchor="w",
+            )
+            lbl_h.pack(side="left")
+
+            cb = ttk.Combobox(cell_frame, values=options, state="readonly", width=22, font=("Segoe UI", 8))
+            cb.pack(side="left", padx=4)
+
+            badge = tk.Label(cell_frame, text="", font=("Segoe UI", 7, "bold"), bg="#FFFFFF", width=10)
+            badge.pack(side="left")
+
+            matched_target = initial_mapping.get(h)
+            if matched_target:
+                for opt in options:
+                    if opt.startswith(matched_target + " "):
+                        cb.set(opt)
+                        break
+                badge.config(text="✅ Matched", fg="#15803D")
+            else:
+                cb.set("-- Unmatched / Skip --")
+                badge.config(text="⚠️ Unmatched", fg="#B45309")
+
+            cb.bind("<<ComboboxSelected>>", lambda e, hdr=h: self._on_mapping_change(hdr))
+            self.mapping_combos[h] = cb
+            self.mapping_badges[h] = badge
+
+    def _on_mapping_change(self, header: str):
+        cb = self.mapping_combos.get(header)
+        badge = self.mapping_badges.get(header)
+        if not cb or not badge:
+            return
+
+        sel = cb.get()
+        if not sel or sel.startswith("--"):
+            badge.config(text="⚠️ Unmatched", fg="#B45309")
+        else:
+            badge.config(text="✅ Matched", fg="#15803D")
+
+        # Update preview table columns based on new mapping
+        if self.raw_headers and self.raw_rows:
+            self._render_preview_table(self.raw_headers, self.raw_rows[:50])
+
+        self.validate_dataset()
+
+    def get_current_mapping(self) -> Dict[str, Optional[str]]:
+        mapping = {}
+        for h, cb in self.mapping_combos.items():
+            sel = cb.get()
+            if not sel or sel.startswith("--"):
+                mapping[h] = None
+            else:
+                target = sel.split(" ")[0]
+                mapping[h] = target
+        return mapping
+
+    def check_ambiguous_mappings(self) -> Tuple[bool, str]:
+        """Check for duplicate column mappings or missing required identifiers."""
+        mapping = self.get_current_mapping()
+        target_counts: Dict[str, List[str]] = {}
+        for h, t in mapping.items():
+            if t:
+                target_counts.setdefault(t, []).append(h)
+
+        ambiguous = []
+        for t, hdrs in target_counts.items():
+            if len(hdrs) > 1:
+                ambiguous.append(f"• Target '{t}' is mapped to multiple columns: {', '.join(hdrs)}")
+
+        if ambiguous:
+            return True, "Ambiguous Column Mappings Detected:\n" + "\n".join(ambiguous)
+
+        has_fam = "family_name" in mapping.values()
+        has_pil = "full_name" in mapping.values()
+        if not has_fam and not has_pil:
+            return True, "Neither 'Family Name' nor 'Pilgrim Full Name' is mapped. At least one is required."
+
+        return False, ""
+
+    # -------------------------------------------------------------------------
+    # DATA PREVIEW RENDERING
+    # -------------------------------------------------------------------------
+    def _render_preview_table(
+        self,
+        headers: List[str],
+        sample_rows: List[Dict[str, Any]],
+        mapping: Optional[Dict[str, Optional[str]]] = None,
+    ):
+        for item in self.tree_preview.get_children():
+            self.tree_preview.delete(item)
+
+        mapping = mapping or self.get_current_mapping()
+        target_to_hdr: Dict[str, str] = {}
+        for h, t in mapping.items():
+            if t and t not in target_to_hdr:
+                target_to_hdr[t] = h
+
+        # Core required columns to show
+        core_cols = [
+            ("_row_num", "Row #", 55, "center"),
+            ("fam_id", "Family ID", 110, "center"),
+            ("fam_name", "Family Name", 140, "w"),
+            ("pilgrim_name", "Pilgrim Name", 140, "w"),
+            ("age", "Age", 55, "center"),
+            ("gender", "Gender", 65, "center"),
+            ("mobile", "Mobile Number", 110, "center"),
+        ]
+
+        mapped_hdrs = set(target_to_hdr.values())
+        other_hdrs = [h for h in headers if h not in mapped_hdrs]
+
+        all_col_ids = [c[0] for c in core_cols] + [f"other_{i}" for i in range(len(other_hdrs))]
+        self.tree_preview["columns"] = all_col_ids
+
+        for cid, title, w, align in core_cols:
+            self.tree_preview.heading(cid, text=title)
+            self.tree_preview.column(cid, width=w, anchor=align)
+
+        for i, h in enumerate(other_hdrs):
+            cid = f"other_{i}"
+            self.tree_preview.heading(cid, text=h)
+            self.tree_preview.column(cid, width=120, anchor="w")
+
+        f_id_hdr = target_to_hdr.get("family_code")
+        f_name_hdr = target_to_hdr.get("family_name")
+        p_name_hdr = target_to_hdr.get("full_name")
+        age_hdr = target_to_hdr.get("age")
+        gender_hdr = target_to_hdr.get("gender")
+        phone_hdr = target_to_hdr.get("phone")
+
+        for idx, r in enumerate(sample_rows):
+            row_num = r.get("_row_num", idx + 1)
+            fam_id = str(r.get(f_id_hdr, "")) if f_id_hdr else ""
+            fam_name = str(r.get(f_name_hdr, "")) if f_name_hdr else ""
+            p_name = str(r.get(p_name_hdr, "")) if p_name_hdr else ""
+            age = str(r.get(age_hdr, "")) if age_hdr else ""
+            gender = str(r.get(gender_hdr, "")) if gender_hdr else ""
+            mobile = str(r.get(phone_hdr, "")) if phone_hdr else ""
+
+            if not fam_name and p_name:
+                fam_name = f"{p_name} Family"
+
+            vals = [row_num, fam_id, fam_name, p_name, age, gender, mobile] + [str(r.get(h, "")) for h in other_hdrs]
+            self.tree_preview.insert("", "end", values=vals)
+
+    # -------------------------------------------------------------------------
+    # VALIDATION ENGINE & ROW-SPECIFIC ERROR BREAKDOWN
+    # -------------------------------------------------------------------------
+    def validate_dataset(self):
+        if not self.raw_rows:
+            return
+
+        mapping = self.get_current_mapping()
+        policy = self.dup_var.get()
+
+        try:
+            analysis = validate_and_analyze_dataset(
+                headers=self.raw_headers,
+                raw_rows=self.raw_rows,
+                column_mapping=mapping,
+                dup_policy=policy,
+                db_path=self.db_path,
+            )
+            self.analysis_result = analysis
+
+            tot = analysis["total_rows"]
+            valid = analysis["valid_rows_count"]
+            invalid = analysis["invalid_rows_count"]
+            new_f = analysis["new_families_count"]
+            new_p = analysis["new_pilgrims_count"]
+            dup = analysis["duplicate_records_count"]
+            skip = analysis["skipped_records_count"]
+
+            # 1. Update Tab 2 Row Error Table
+            for item in self.tree_errors.get_children():
+                self.tree_errors.delete(item)
+
+            val_errors = analysis.get("validation_errors", [])
+            for err in val_errors:
+                self.tree_errors.insert(
+                    "",
+                    "end",
+                    values=(
+                        err.get("row", ""),
+                        err.get("column", ""),
+                        err.get("value", ""),
+                        err.get("error", ""),
+                        err.get("severity", "Error"),
+                    ),
+                )
+
+            if invalid > 0:
+                self.lbl_val_status.config(
+                    text=f"⚠️ {invalid} row-specific validation error(s) found across {tot} rows. Review below:",
+                    fg="#DC2626",
+                )
+                self.btn_export_errors.config(state="normal")
+            else:
+                self.lbl_val_status.config(
+                    text=f"✅ All {tot} rows validated successfully with zero errors!",
+                    fg="#15803D",
+                )
+                self.btn_export_errors.config(state="disabled")
+
+            # 2. Update Tab 3 Summary Badges
+            self.badge_sum_labels["tot"].config(text=str(tot))
+            self.badge_sum_labels["valid"].config(text=str(valid))
+            self.badge_sum_labels["invalid"].config(text=str(invalid))
+            self.badge_sum_labels["new_f"].config(text=str(new_f))
+            self.badge_sum_labels["new_p"].config(text=str(new_p))
+            self.badge_sum_labels["dup"].config(text=str(dup))
+            self.badge_sum_labels["skip"].config(text=str(skip))
+
+            # 3. Update Sticky Bottom Summary Label
+            summary_str = (
+                f"📊 Total Rows: {tot}  |  ✅ Valid: {valid}  |  ⚠️ Invalid: {invalid}  |  "
+                f"👥 New Families: {new_f}  |  👤 New Pilgrims: {new_p}  |  ⏩ Skipped: {skip}"
+            )
+            self.lbl_bottom_summary.config(
+                text=summary_str,
+                fg="#0F172A" if invalid == 0 else "#B45309",
+            )
+
+            # 4. Commit Button State
+            if valid > 0:
+                self.btn_commit.config(state="normal", bg="#15803D")
+            else:
+                self.btn_commit.config(state="disabled", bg="#94A3B8")
+
+        except Exception as e:
+            logger.error(f"Dataset validation error: {e}")
+            self.lbl_bottom_summary.config(text=f"❌ Validation Error: {e}", fg="#DC2626")
+            self.lbl_val_status.config(text=f"❌ Validation Error: {e}", fg="#DC2626")
+            self.btn_commit.config(state="disabled", bg="#94A3B8")
+
+    def download_error_report(self):
+        if not self.analysis_result or not self.analysis_result.get("validation_errors"):
+            messagebox.showinfo("No Errors", "No validation errors to export.", parent=self)
+            return
+
+        out_path = filedialog.asksaveasfilename(
+            parent=self,
+            title="Save Validation Error Report",
+            defaultextension=".csv",
+            filetypes=[("CSV File (*.csv)", "*.csv")],
+            initialfile=f"validation_errors_{datetime.datetime.now():%Y%m%d_%H%M%S}.csv",
+        )
+        if not out_path:
+            return
+
+        export_validation_report_csv(self.analysis_result["validation_errors"], out_path)
+        messagebox.showinfo("Report Saved", f"Validation error report saved to:\n{out_path}", parent=self)
+
+    # -------------------------------------------------------------------------
+    # IMPORT COMMIT & DATABASE INTEGRATION
+    # -------------------------------------------------------------------------
+    def commit_import(self):
+        if not self.analysis_result:
+            return
+
+        valid_count = self.analysis_result.get("valid_rows_count", 0)
+        invalid_count = self.analysis_result.get("invalid_rows_count", 0)
+        tot = self.analysis_result.get("total_rows", 0)
+        new_f = self.analysis_result.get("new_families_count", 0)
+        new_p = self.analysis_result.get("new_pilgrims_count", 0)
+        dup = self.analysis_result.get("duplicate_records_count", 0)
+        skip = self.analysis_result.get("skipped_records_count", 0)
+        policy = self.dup_var.get()
+
+        # Step 1: Check ambiguous mappings
+        is_ambiguous, amb_msg = self.check_ambiguous_mappings()
+        if is_ambiguous:
+            proceed_amb = messagebox.askyesno(
+                "Ambiguous Mapping Warning",
+                f"⚠️ {amb_msg}\n\nDo you want to proceed anyway?",
+                parent=self,
+            )
+            if not proceed_amb:
+                return
+
+        # Step 2: Confirmation if UPDATE policy selected
+        if policy == DUP_POLICY_UPDATE:
+            confirm_upd = messagebox.askyesno(
+                "Confirm Record Update",
+                "⚠️ Update Policy Selected:\nExisting database records will be updated with new data from file.\n\nAre you sure you want to proceed?",
+                parent=self,
+            )
+            if not confirm_upd:
+                return
+
+        # Step 3: Full import summary confirmation modal
+        summary_msg = (
+            "📋 DATASET IMPORT SUMMARY & CONFIRMATION\n"
+            "===========================================\n"
+            f"• Total Rows in File:       {tot}\n"
+            f"• Valid Records to Import:  {valid_count}\n"
+            f"• Rejected Invalid Rows:    {invalid_count}\n"
+            f"• New Families to Create:   {new_f}\n"
+            f"• New Pilgrims to Add:      {new_p}\n"
+            f"• Duplicate Records:        {dup}\n"
+            f"• Records to Skip:          {skip}\n"
+            f"• Duplicate Handling:       {policy}\n"
+            "===========================================\n\n"
+            "🛡️ An automatic SQLite database backup will be created before committing.\n"
+            "All operations run within an atomic transaction.\n\n"
+            "Do you want to commit these records to the database now?"
+        )
+
+        confirm_commit = messagebox.askyesno("Confirm Dataset Import", summary_msg, parent=self)
+        if not confirm_commit:
+            return
+
+        try:
+            # Create pre-import database backup
+            try:
+                create_database_backup(db_path=self.db_path)
+            except Exception as b_err:
+                logger.warning(f"Pre-import backup warning: {b_err}")
+
+            mapping = self.get_current_mapping()
+            res = execute_dataset_import(
+                analysis=self.analysis_result,
+                file_name=self.current_file_path.name if self.current_file_path else "dataset.csv",
+                file_size=self.file_size,
+                file_format=self.file_format,
+                column_mapping=mapping,
+                admin_user="admin",
+                db_path=self.db_path,
+            )
+
+            # Trigger on_success callback to automatically refresh dashboard statistics
+            if self.on_success:
+                try:
+                    self.on_success()
+                except Exception as cb_err:
+                    logger.error(f"Dashboard refresh callback error: {cb_err}")
+
+            messagebox.showinfo(
+                "Import Successful",
+                f"✅ Dataset Import Completed!\n\n"
+                f"• Successfully Imported: {res.get('successful_records', 0)} devotee records\n"
+                f"• Families Created: {new_f}\n"
+                f"• Batch ID: {res.get('batch_id', 'N/A')}\n\n"
+                f"Dashboard statistics have been refreshed.",
+                parent=self,
+            )
+
+            self.destroy()
+
+        except Exception as e:
+            logger.error(f"Dataset import execution failed: {e}")
+            messagebox.showerror(
+                "Import Failed",
+                f"A database error occurred during import:\n{e}\n\nTransaction has been rolled back safely.",
+                parent=self,
+            )
+
